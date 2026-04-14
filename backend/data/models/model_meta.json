@@ -1,0 +1,29 @@
+{
+  "mape_validation_pct": 8.39,
+  "feature_cols": [
+    "size_sqft",
+    "age_years",
+    "floor_num",
+    "is_freehold",
+    "is_rera_registered",
+    "rental_yield_pct",
+    "infra_score",
+    "listing_density",
+    "is_standard_config",
+    "circle_rate_per_sqft",
+    "location_multiplier",
+    "age_depreciation_factor",
+    "zone_tier_encoded",
+    "prop_type_encoded"
+  ],
+  "prop_type_encoding": {
+    "1bhk_apartment": 0,
+    "2bhk_apartment": 1,
+    "3bhk_apartment": 2,
+    "4bhk_apartment": 3,
+    "villa": 4,
+    "shop": 5,
+    "office": 6,
+    "plot": 7
+  }
+}

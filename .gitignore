@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Model artifacts (large files)
+backend/data/models/*.ubj
+backend/data/models/*.pkl
+backend/data/processed/*.csv
+
+# Databases (Local data)
+backend/data/*.db
+*.sqlite3
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/build/
+dist/
+
+# Env
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+sample_images/
+sample_batch.csv
+test_report.pdf
