@@ -5,32 +5,41 @@ Anchored to: circle rate growth (5-8% YoY) + RBI repo rate cycles + micro-market
 Returns monthly price index suitable for area chart visualization.
 """
 
-import math
 import hashlib
-from datetime import datetime, date
-from dateutil.relativedelta import relativedelta
-from typing import List, Dict
+import math
+from datetime import date, datetime
+from typing import Dict, List
 
+from dateutil.relativedelta import relativedelta
 
 # Annual appreciation rates by zone (based on RBI reports + NHB data 2022-2024)
 ZONE_APPRECIATION = {
-    "prime":      {"annual_pct": 8.5, "volatility": 0.03},
-    "mid":        {"annual_pct": 7.0, "volatility": 0.025},
+    "prime": {"annual_pct": 8.5, "volatility": 0.03},
+    "mid": {"annual_pct": 7.0, "volatility": 0.025},
     "peripheral": {"annual_pct": 5.5, "volatility": 0.02},
 }
 
 # City multipliers (Mumbai > Bangalore > Pune for absolute appreciation)
 CITY_MULTIPLIER = {
-    "Mumbai":    1.15,
+    "Mumbai": 1.15,
     "Bangalore": 1.08,
-    "Pune":      1.00,
+    "Pune": 1.00,
 }
 
 # Seasonal adjustment (Q4 Oct-Dec is peak transaction season in India)
 SEASONAL = {
-    1: -0.008, 2: -0.005, 3:  0.002, 4:  0.005,
-    5:  0.003, 6:  0.000, 7: -0.003, 8: -0.002,
-    9:  0.004, 10: 0.008, 11: 0.010, 12: 0.006,
+    1: -0.008,
+    2: -0.005,
+    3: 0.002,
+    4: 0.005,
+    5: 0.003,
+    6: 0.000,
+    7: -0.003,
+    8: -0.002,
+    9: 0.004,
+    10: 0.008,
+    11: 0.010,
+    12: 0.006,
 }
 
 
@@ -56,7 +65,7 @@ def generate_price_trend(
     zone_cfg = ZONE_APPRECIATION.get(zone_tier, ZONE_APPRECIATION["mid"])
     city_mult = CITY_MULTIPLIER.get(city, 1.0)
     annual_rate = (zone_cfg["annual_pct"] / 100) * city_mult
-    monthly_rate = (1 + annual_rate) ** (1/12) - 1
+    monthly_rate = (1 + annual_rate) ** (1 / 12) - 1
     volatility = zone_cfg["volatility"]
 
     # Work backwards from current month
@@ -73,23 +82,27 @@ def generate_price_trend(
         seasonal_adj = SEASONAL[month_date.month]
         noise = _deterministic_noise(locality, i, volatility)
         growth = monthly_rate + seasonal_adj + noise
-        current_price *= (1 + growth)
+        current_price *= 1 + growth
 
-        trend.append({
-            "month": month_date.month,
-            "year": month_date.year,
-            "label": month_date.strftime("%b %Y"),
-            "price_per_sqft": round(current_price),
-            "index": round((current_price / start_price) * 100, 1),
-            "month_offset": i,
-        })
+        trend.append(
+            {
+                "month": month_date.month,
+                "year": month_date.year,
+                "label": month_date.strftime("%b %Y"),
+                "price_per_sqft": round(current_price),
+                "index": round((current_price / start_price) * 100, 1),
+                "month_offset": i,
+            }
+        )
 
     # Anchor last data point to the actual current estimate
     if trend:
         scale = base_price_sqft / trend[-1]["price_per_sqft"]
         for point in trend:
             point["price_per_sqft"] = round(point["price_per_sqft"] * scale)
-            point["index"] = round((point["price_per_sqft"] / trend[0]["price_per_sqft"]) * 100, 1)
+            point["index"] = round(
+                (point["price_per_sqft"] / trend[0]["price_per_sqft"]) * 100, 1
+            )
 
     return trend
 
@@ -99,8 +112,8 @@ def get_trend_summary(trend: List[Dict]) -> Dict:
     if not trend or len(trend) < 2:
         return {}
     first = trend[0]["price_per_sqft"]
-    last  = trend[-1]["price_per_sqft"]
-    mid   = trend[len(trend)//2]["price_per_sqft"]
+    last = trend[-1]["price_per_sqft"]
+    mid = trend[len(trend) // 2]["price_per_sqft"]
     total_change_pct = ((last - first) / first) * 100
     last_6m_change_pct = ((last - mid) / mid) * 100
     peak = max(t["price_per_sqft"] for t in trend)
@@ -113,13 +126,21 @@ def get_trend_summary(trend: List[Dict]) -> Dict:
         "last_6m_change_pct": round(last_6m_change_pct, 1),
         "peak_price": peak,
         "trough_price": trough,
-        "trend_direction": "up" if total_change_pct > 2 else "flat" if total_change_pct > -2 else "down",
-        "annualized_return_pct": round(total_change_pct / 2, 1),  # 24 months → divide by 2
+        "trend_direction": (
+            "up"
+            if total_change_pct > 2
+            else "flat" if total_change_pct > -2 else "down"
+        ),
+        "annualized_return_pct": round(
+            total_change_pct / 2, 1
+        ),  # 24 months → divide by 2
     }
 
 
 if __name__ == "__main__":
-    trend = generate_price_trend("Baner", "prime", "Pune", base_price_sqft=22000, months=24)
+    trend = generate_price_trend(
+        "Baner", "prime", "Pune", base_price_sqft=22000, months=24
+    )
     summary = get_trend_summary(trend)
     print(f"Baner 24-month trend:")
     print(f"  {trend[0]['label']}: ₹{trend[0]['price_per_sqft']:,}/sqft")

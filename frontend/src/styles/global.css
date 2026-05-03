@@ -1,41 +1,51 @@
 /* PropIQ Global Styles */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 :root {
-  --purple-50:  #EEEDFE;
-  --purple-100: #CECBF6;
-  --purple-400: #7F77DD;
-  --purple-600: #534AB7;
-  --purple-800: #3C3489;
-  --teal-50:    #E1F5EE;
-  --teal-400:   #1D9E75;
-  --teal-600:   #0F6E56;
-  --amber-50:   #FAEEDA;
-  --amber-400:  #BA7517;
-  --amber-600:  #854F0B;
-  --coral-50:   #FAECE7;
-  --coral-600:  #993C1D;
-  --red-50:     #FCEBEB;
-  --red-600:    #A32D2D;
-  --gray-50:    #F1EFE8;
-  --gray-100:   #D3D1C7;
-  --gray-400:   #888780;
-  --gray-600:   #5F5E5A;
-  --gray-900:   #2C2C2A;
-  --white:      #ffffff;
-  --bg:         #F7F6F2;
-  --surface:    #ffffff;
-  --border:     rgba(44,44,42,0.12);
-  --border-md:  rgba(44,44,42,0.22);
-  --radius-sm:  6px;
-  --radius-md:  10px;
-  --radius-lg:  14px;
-  --shadow-sm:  0 1px 3px rgba(0,0,0,0.07);
-  --shadow-md:  0 4px 16px rgba(0,0,0,0.09);
+  --purple-50: #eeedfe;
+  --purple-100: #cecbf6;
+  --purple-400: #7f77dd;
+  --purple-600: #534ab7;
+  --purple-800: #3c3489;
+  --teal-50: #e1f5ee;
+  --teal-400: #1d9e75;
+  --teal-600: #0f6e56;
+  --amber-50: #faeeda;
+  --amber-400: #ba7517;
+  --amber-600: #854f0b;
+  --coral-50: #faece7;
+  --coral-600: #993c1d;
+  --red-50: #fcebeb;
+  --red-600: #a32d2d;
+  --gray-50: #f1efe8;
+  --gray-100: #d3d1c7;
+  --gray-400: #888780;
+  --gray-600: #5f5e5a;
+  --gray-900: #2c2c2a;
+  --white: #ffffff;
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --border: rgba(44, 44, 42, 0.12);
+  --border-md: rgba(44, 44, 42, 0.22);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.09);
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   background: var(--bg);
   color: var(--gray-900);
   font-size: 14px;
@@ -44,9 +54,18 @@ body {
 }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--gray-100); border-radius: 3px; }
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gray-100);
+  border-radius: 3px;
+}
 
 /* Leaflet fix */
-.leaflet-container { border-radius: var(--radius-md); }
+.leaflet-container {
+  border-radius: var(--radius-md);
+}

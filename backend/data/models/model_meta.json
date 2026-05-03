@@ -1,5 +1,5 @@
 {
-  "mape_validation_pct": 8.39,
+  "mape_validation_pct": 7.47,
   "feature_cols": [
     "size_sqft",
     "age_years",
@@ -14,6 +14,14 @@
     "location_multiplier",
     "age_depreciation_factor",
     "zone_tier_encoded",
+    "neighbourhood_quality_score",
+    "micro_market_cycle",
+    "bid_ask_spread_pct",
+    "buyer_pool_depth_index",
+    "comp_velocity_score",
+    "rental_cap_rate",
+    "developer_grade",
+    "floor_zone_premium",
     "prop_type_encoded"
   ],
   "prop_type_encoding": {
@@ -24,6 +32,8 @@
     "villa": 4,
     "shop": 5,
     "office": 6,
-    "plot": 7
+    "plot": 7,
+    "warehouse": 8,
+    "factory": 9
   }
 }

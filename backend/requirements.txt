@@ -3,12 +3,14 @@ uvicorn[standard]==0.29.0
 pydantic==2.7.1
 python-multipart==0.0.9
 httpx==0.27.0
+openai>=1.30.0
 aiohttp==3.9.5
 requests==2.31.0
 beautifulsoup4==4.12.3
 pandas==2.3.3
 numpy==1.26.4
 scikit-learn==1.4.2
+tenacity==8.2.3
 xgboost==2.0.3
 shap==0.45.0
 pillow==10.3.0
@@ -21,3 +23,15 @@ geopy==2.4.1
 python-dotenv==1.0.1
 pytest==8.2.0
 pytest-asyncio==0.23.6
+groq
+
+# Phase 1: Database Modernization & Asynchronous Processing
+sqlalchemy==2.0.29
+psycopg2-binary==2.9.9
+celery==5.4.0
+redis==4.5.5
+
+# Phase 2: Enterprise Architecture (Caching, Rate Limiting, WSGI)
+slowapi==0.1.9
+fastapi-cache2[redis]==0.2.1
+gunicorn==22.0.0
