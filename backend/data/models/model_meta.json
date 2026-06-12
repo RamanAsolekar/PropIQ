@@ -1,5 +1,7 @@
 {
-  "mape_validation_pct": 7.47,
+  "version": "2.0.0+20260610105931",
+  "mape_validation_pct": 7.33,
+  "feature_schema_version": "2.0.0",
   "feature_cols": [
     "size_sqft",
     "age_years",
@@ -35,5 +37,50 @@
     "plot": 7,
     "warehouse": 8,
     "factory": 9
+  },
+  "train_metadata": {
+    "trained_at": "2026-06-10T10:59:31.136827+00:00",
+    "n_rows": 8064,
+    "feature_schema_version": "2.0.0",
+    "data_hash": "08d1831e17350bf4",
+    "metrics": {
+      "cv_mape": 0.07329801999552787,
+      "cv_r2": 0.9793386150632012,
+      "cv_p10_p90_coverage": 0.6271108348883682
+    },
+    "global_feature_importance": {
+      "circle_rate_per_sqft": 0.4636416435241699,
+      "location_multiplier": 0.16929669678211212,
+      "age_years": 0.07171986997127533,
+      "is_standard_config": 0.06400896608829498,
+      "size_sqft": 0.06059998273849487,
+      "prop_type_encoded": 0.05775122717022896,
+      "infra_score": 0.054426565766334534,
+      "age_depreciation_factor": 0.0478527806699276,
+      "is_freehold": 0.03182810917496681,
+      "floor_num": 0.031336914747953415,
+      "zone_tier_encoded": 0.027358410879969597,
+      "floor_zone_premium": 0.013838229700922966,
+      "micro_market_cycle": 0.012502619065344334,
+      "is_rera_registered": 0.01245125476270914,
+      "bid_ask_spread_pct": 0.012227267026901245,
+      "neighbourhood_quality_score": 0.010185320861637592,
+      "rental_cap_rate": 0.007045805919915438,
+      "buyer_pool_depth_index": 0.005187656730413437,
+      "developer_grade": 0.003842218080535531,
+      "listing_density": 0.0026112673804163933,
+      "rental_yield_pct": 0.0023373484145849943,
+      "comp_velocity_score": 0.0023237159475684166
+    },
+    "xgb_params": {
+      "n_estimators": 400,
+      "max_depth": 6,
+      "learning_rate": 0.05,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "reg_alpha": 0.1,
+      "reg_lambda": 1.0,
+      "random_state": 42
+    }
   }
 }

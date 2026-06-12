@@ -1,0 +1,12 @@
+# PropIQ Feast Feature Store config.
+# Local registry + SQLite online store by default — NO server required to run.
+# Swap online_store to redis and registry to a remote path for production.
+project: propiq
+provider: local
+registry: data/feast_registry.db
+online_store:
+  type: sqlite
+  path: data/feast_online.db
+offline_store:
+  type: file
+entity_key_serialization_version: 2

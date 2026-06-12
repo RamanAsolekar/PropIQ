@@ -82,6 +82,22 @@ services:
       - ./backend:/app
     command: celery -A app.core.celery_app beat --loglevel=info
 
+  # ── MLflow Tracking UI (optional) ────────────────────────────────────────
+  # Browse experiments/metrics at http://localhost:5000. PropIQ logs to the
+  # shared ./backend/data/mlruns file store, so this is just a viewer — the app
+  # does NOT depend on it being up.
+  mlflow:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+    command: >
+      mlflow ui --host 0.0.0.0 --port 5000
+      --backend-store-uri file:/app/data/mlruns
+
   # ── React Frontend ───────────────────────────────────────────────────────
   frontend:
     build:

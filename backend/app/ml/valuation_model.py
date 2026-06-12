@@ -9,6 +9,7 @@ PropIQ Valuation Model
 
 import json
 import pickle
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -18,43 +19,10 @@ from sklearn.metrics import mean_absolute_percentage_error
 from sklearn.model_selection import KFold
 from xgboost import XGBRegressor
 
-# Extended Feature Set (22 features)
-FEATURE_COLS = [
-    "size_sqft",
-    "age_years",
-    "floor_num",
-    "is_freehold",
-    "is_rera_registered",
-    "rental_yield_pct",
-    "infra_score",
-    "listing_density",
-    "is_standard_config",
-    "circle_rate_per_sqft",
-    "location_multiplier",
-    "age_depreciation_factor",
-    "zone_tier_encoded",
-    "neighbourhood_quality_score",
-    "micro_market_cycle",
-    "bid_ask_spread_pct",
-    "buyer_pool_depth_index",
-    "comp_velocity_score",
-    "rental_cap_rate",
-    "developer_grade",
-    "floor_zone_premium",
-]
-
-PROP_TYPE_ENCODING = {
-    "1bhk_apartment": 0,
-    "2bhk_apartment": 1,
-    "3bhk_apartment": 2,
-    "4bhk_apartment": 3,
-    "villa": 4,
-    "shop": 5,
-    "office": 6,
-    "plot": 7,
-    "warehouse": 8,
-    "factory": 9,
-}
+# Canonical feature contract — single source of truth shared by training AND
+# serving (train/serve skew fix). Do not redefine features here.
+from app.ml.features import (FEATURE_COLS, FEATURE_SCHEMA_VERSION,
+                             PROP_TYPE_ENCODING, build_feature_row)
 
 DISTRESS_BASE_BY_TYPE = {
     "1bhk_apartment": 0.18,
@@ -136,6 +104,8 @@ class PropIQModel:
         self.shap_explainer = None
         self.feature_cols_full = FEATURE_COLS + ["prop_type_encoded"]
         self.mape_validation = None
+        self.feature_schema_version = FEATURE_SCHEMA_VERSION
+        self.train_metadata = {}  # populated by train(); logged to registry
 
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -164,6 +134,10 @@ class PropIQModel:
 
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         mape_scores = []
+        r2_scores = []
+        coverage_scores = []  # P10–P90 interval coverage (calibration)
+
+        from sklearn.metrics import r2_score
 
         print("Running 5-Fold Cross Validation for robust evaluation...")
         for train_idx, val_idx in kf.split(X):
@@ -174,13 +148,26 @@ class PropIQModel:
                 objective="reg:quantileerror", quantile_alpha=0.50, **xgb_params
             )
             model.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
-
             preds = np.expm1(model.predict(X_va))
             actuals = np.expm1(y_va)
             mape_scores.append(mean_absolute_percentage_error(actuals, preds))
+            r2_scores.append(r2_score(actuals, preds))
+
+            # Quantile calibration: fraction of actuals inside [P10, P90] (target ~0.80)
+            m10 = XGBRegressor(objective="reg:quantileerror", quantile_alpha=0.10, **xgb_params)
+            m90 = XGBRegressor(objective="reg:quantileerror", quantile_alpha=0.90, **xgb_params)
+            m10.fit(X_tr, y_tr, verbose=False)
+            m90.fit(X_tr, y_tr, verbose=False)
+            lo, hi = np.expm1(m10.predict(X_va)), np.expm1(m90.predict(X_va))
+            coverage_scores.append(float(np.mean((actuals >= lo) & (actuals <= hi))))
 
         self.mape_validation = float(np.mean(mape_scores))
-        print(f"5-Fold CV MAPE: {self.mape_validation*100:.1f}%")
+        cv_r2 = float(np.mean(r2_scores))
+        cv_coverage = float(np.mean(coverage_scores))
+        print(
+            f"5-Fold CV  MAPE={self.mape_validation*100:.2f}%  "
+            f"R2={cv_r2:.3f}  P10-P90 coverage={cv_coverage:.2%}"
+        )
 
         print("Training final models on full dataset...")
         self.model_p10 = XGBRegressor(
@@ -215,6 +202,42 @@ class PropIQModel:
 
         self.shap_explainer = shap.TreeExplainer(self.model_p50)
 
+        # ── Global feature importance (SHAP) for explainability/governance ──
+        try:
+            sample = X.sample(min(500, len(X)), random_state=42)
+            shap_matrix = self.shap_explainer.shap_values(sample)
+            mean_abs = np.abs(shap_matrix).mean(axis=0)
+            global_importance = {
+                feat: float(val)
+                for feat, val in sorted(
+                    zip(self.feature_cols_full, mean_abs),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+            }
+        except Exception:
+            global_importance = {}
+
+        # ── Data hash for reproducibility (data versioning) ─────────────────
+        import hashlib
+
+        data_hash = hashlib.sha256(
+            pd.util.hash_pandas_object(X, index=True).values.tobytes()
+        ).hexdigest()[:16]
+
+        self.train_metadata = {
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "n_rows": int(len(X)),
+            "feature_schema_version": self.feature_schema_version,
+            "data_hash": data_hash,
+            "metrics": {
+                "cv_mape": self.mape_validation,
+                "cv_r2": cv_r2,
+                "cv_p10_p90_coverage": cv_coverage,
+            },
+            "global_feature_importance": global_importance,
+            "xgb_params": xgb_params,
+        }
         return self
 
     def predict(self, input_data: dict) -> dict:
@@ -316,55 +339,17 @@ class PropIQModel:
                 if getattr(self, "mape_validation", None)
                 else None
             ),
+            # Provenance for the outcome loop, drift monitoring & governance
+            "feature_schema_version": getattr(
+                self, "feature_schema_version", FEATURE_SCHEMA_VERSION
+            ),
+            "_feature_vector": {k: round(float(v), 4) for k, v in row.items()},
         }
 
     def _build_feature_row(self, d: dict) -> dict:
-        prop_type = d.get("prop_type", "2bhk_apartment").lower().replace(" ", "_")
-        zone_tier = d.get("zone_tier", "mid")
-        zone_map = {"prime": 78.0, "mid": 58.0, "peripheral": 40.0}
-
-        yoy = float(d.get("yoy_price_growth_pct", 5.0))
-        moi = float(d.get("months_of_inventory", 6.0))
-        cycle_encoded = 2 if yoy > 7.0 else (0 if yoy < 2.0 else 1)
-        bid_ask = max(1.0, (moi / 6.0) * 4.0 + max(0, 10.0 - yoy))
-        infra = float(d.get("infra_score", 50.0))
-        ld = float(d.get("listing_density", 0.5))
-        depth_index = min(100.0, max(0.0, ld * 60 + infra * 0.4))
-        comp_vel = d.get("listing_velocity", 0.5) * 10
-        rental = float(d.get("rental_yield_pct", 0.0))
-        age = float(d.get("age_years", 10))
-        cap_rate = rental / (1.0 + age * 0.02) if rental > 0 else 0.0
-        floor_num = int(d.get("floor_num", 3))
-        floor_zone = floor_num * (0.01 if zone_tier == "prime" else 0.005)
-
-        return {
-            "size_sqft": float(d.get("size_sqft", 800)),
-            "age_years": age,
-            "floor_num": floor_num,
-            "is_freehold": int(d.get("is_freehold", 1)),
-            "is_rera_registered": int(d.get("is_rera_registered", 1)),
-            "rental_yield_pct": rental,
-            "infra_score": infra,
-            "listing_density": ld,
-            "is_standard_config": int(d.get("is_standard_config", 1)),
-            "circle_rate_per_sqft": float(d.get("circle_rate_per_sqft", 7500)),
-            "location_multiplier": float(d.get("location_multiplier", 1.4)),
-            "age_depreciation_factor": max(0.55, 1.0 - age * 0.0125),
-            "zone_tier_encoded": {"prime": 2, "mid": 1, "peripheral": 0}.get(
-                zone_tier, 1
-            ),
-            "neighbourhood_quality_score": float(
-                d.get("neighbourhood_quality_score", zone_map.get(zone_tier, 58.0))
-            ),
-            "micro_market_cycle": cycle_encoded,
-            "bid_ask_spread_pct": bid_ask,
-            "buyer_pool_depth_index": depth_index,
-            "comp_velocity_score": comp_vel,
-            "rental_cap_rate": cap_rate * 100,
-            "developer_grade": 2,
-            "floor_zone_premium": floor_zone,
-            "prop_type_encoded": PROP_TYPE_ENCODING.get(prop_type, 1),
-        }
+        """Delegates to the canonical transform so serving features are IDENTICAL
+        to training features (train/serve skew fix). See app/ml/features.py."""
+        return build_feature_row(d)
 
     def _run_liquidity_engine(
         self, d: dict, liq_score_ml: float, market_value: float
@@ -695,20 +680,61 @@ class PropIQModel:
             summary.append(label)
         return summary
 
-    def save(self, path: str):
+    def save(self, path: str, register: bool = True):
         Path(path).mkdir(parents=True, exist_ok=True)
         with open(f"{path}/propiq_model.pkl", "wb") as f:
             pickle.dump(self, f)
+
+        # Semantic version: schema.major + timestamp build id (monotonic, traceable)
+        build_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        version = f"{self.feature_schema_version}+{build_id}"
+
         meta = {
+            "version": version,
             "mape_validation_pct": (
                 round(self.mape_validation * 100, 2) if self.mape_validation else None
             ),
+            "feature_schema_version": self.feature_schema_version,
             "feature_cols": self.feature_cols_full,
             "prop_type_encoding": PROP_TYPE_ENCODING,
+            "train_metadata": self.train_metadata,
         }
         with open(f"{path}/model_meta.json", "w") as f:
             json.dump(meta, f, indent=2)
-        print(f"Model saved to {path}/")
+        print(f"Model saved to {path}/ (version {version})")
+
+        # ── Experiment tracking + model registry (telemetry, never fatal) ───
+        if register:
+            try:
+                from app.ml.tracking import (log_training_run,
+                                             register_model_version)
+
+                tm = self.train_metadata
+                metrics = tm.get("metrics", {})
+                run_id = log_training_run(
+                    params={
+                        "n_rows": tm.get("n_rows"),
+                        "feature_schema_version": self.feature_schema_version,
+                        **tm.get("xgb_params", {}),
+                    },
+                    metrics={
+                        "cv_mape": metrics.get("cv_mape"),
+                        "cv_r2": metrics.get("cv_r2"),
+                        "cv_p10_p90_coverage": metrics.get("cv_p10_p90_coverage"),
+                    },
+                    model_dir=path,
+                    tags={"data_hash": tm.get("data_hash", "")},
+                )
+                register_model_version(
+                    version=version,
+                    metrics=metrics,
+                    feature_schema_version=self.feature_schema_version,
+                    data_hash=tm.get("data_hash", ""),
+                    stage="Staging",
+                    mlflow_run_id=run_id,
+                )
+            except Exception as e:
+                print(f"Registry/tracking skipped (non-fatal): {e}")
 
     @classmethod
     def load(cls, path: str) -> "PropIQModel":

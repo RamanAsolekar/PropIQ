@@ -83,7 +83,11 @@ PropIQ is a complete, production-ready collateral underwriting operating system 
 )
 
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
 )
 
 import redis.asyncio as redis_async
@@ -102,9 +106,32 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ── Database Initialization ────────────────────────────────────────────────
 @app.on_event("startup")
 async def on_startup():
-    """Initialize database tables, cache, and seed CHM demo loans on startup."""
+    """Initialize database tables, cache, seed CHM demo loans, and run the
+    initial portfolio health check on startup.
+
+    NOTE: Previously the seed + initial health-check calls were placed *after*
+    a `return` inside the global exception handler below, making them dead
+    (unreachable) code — so the CHM dashboard was never seeded on boot. They
+    now live here, where they actually run.
+    """
     Base.metadata.create_all(bind=engine)
     print("Database tables initialized.")
+
+    # Seed circle rates if the table is empty (DB is the source of truth now)
+    try:
+        from app.core.bootstrap import ensure_circle_rates_seeded
+
+        ensure_circle_rates_seeded()
+    except Exception as e:
+        print(f"Circle-rate seed skipped/failed (non-fatal): {e}")
+
+    # Seed the RAG knowledge corpus (RBI / policy / precedents) for grounded memos
+    try:
+        from app.services.rag import seed_knowledge
+
+        seed_knowledge()
+    except Exception as e:
+        print(f"Knowledge seed skipped/failed (non-fatal): {e}")
 
     try:
         redis_url = getattr(settings, "REDIS_URL", "redis://redis:6379/0")
@@ -115,6 +142,15 @@ async def on_startup():
         print("Redis cache initialized.")
     except Exception as e:
         print(f"Redis cache init failed (non-fatal): {e}")
+
+    # Seed demo loans and run the initial CHM health check (now reachable)
+    try:
+        seed_demo_loans()
+        print("Running initial CHM portfolio health check...")
+        await run_portfolio_health_check()
+        print("Initial CHM health check complete.")
+    except Exception as e:
+        print(f"Initial CHM health check failed (non-fatal): {e}")
 
 
 @app.exception_handler(Exception)
@@ -137,14 +173,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             "status": "error",
         },
     )
-
-    seed_demo_loans()
-    print("Running initial CHM portfolio health check...")
-    try:
-        await run_portfolio_health_check()
-        print("Initial CHM health check complete.")
-    except Exception as e:
-        print(f"Initial CHM health check failed (non-fatal): {e}")
 
 
 from functools import lru_cache
@@ -204,6 +232,63 @@ async def _run_assessment(prop: PropertyInput) -> dict:
     }
     model = get_model()
     prediction = model.predict(model_input)
+    # Realized-outcome loop: persist this prediction + its feature vector so it
+    # can later be scored against the actual sale/recovery value (audit gap G2).
+    try:
+        from app.ml.outcomes import log_prediction
+
+        log_prediction({**prediction, "request_id": request_id,
+                        "locality": cr_data["locality"], "prop_type": prop.prop_type})
+    except Exception as _e:
+        print(f"[outcomes] log_prediction skipped (non-fatal): {_e}")
+    # Internal-only field — used for logging/drift, not part of the API contract
+    prediction.pop("_feature_vector", None)
+
+    # ── Multi-model ensemble: triangulate AVM + comps + income, then calibrate
+    try:
+        from app.ml.ensemble import (calibrate_band, comps_estimate,
+                                     income_estimate, reconcile)
+
+        avm_block = {
+            "value": prediction["market_value_mid"],
+            "confidence": prediction.get("confidence_score", 0.7),
+        }
+        comps_block = comps_estimate(
+            cr_data["locality"], prop.prop_type, prop.size_sqft, prop.age_years
+        )
+        income_block = income_estimate(
+            prediction["market_value_mid"], prop.rental_yield_pct, prop.age_years
+        )
+        recon = reconcile(avm_block, comps_block, income_block, prop.prop_type)
+        mvr = prediction.get("market_value_range", [0, 0])
+        band = calibrate_band(
+            mvr[0], prediction["market_value_mid"], mvr[1],
+            recon["agreement_score"], recon["reconciled_value"],
+        )
+        prediction["ensemble_valuation"] = {**recon, **band}
+    except Exception as _e:
+        print(f"[ensemble] reconciliation skipped (non-fatal): {_e}")
+
+    # ── Vector duplicate / fraud-ring detection (additive, non-fatal) ───────
+    try:
+        from app.ml.property_embeddings import duplicate_risk
+
+        dup = duplicate_risk(
+            {**prop.model_dump(), "locality": cr_data["locality"]}, request_id
+        )
+        prediction["duplicate_risk"] = dup
+        if dup["risk_level"] in ("high", "critical"):
+            prediction.setdefault("risk_flags", []).append({
+                "flag": "vector_duplicate_collateral",
+                "severity": "high",
+                "detail": (
+                    f"Vector match: {dup['duplicate_count']} near-identical prior "
+                    f"pledge(s) detected (risk: {dup['risk_level']})."
+                ),
+            })
+    except Exception as _e:
+        print(f"[fraud] duplicate detection skipped (non-fatal): {_e}")
+
     ttl_days = prediction.get("liquidity_profile", {}).get(
         "estimated_time_to_sell_days"
     )
@@ -284,6 +369,15 @@ async def _augment_with_market_outputs(result: dict, prop: PropertyInput) -> dic
     )
     result["credit_memo"] = memo
     result["customer_letter"] = letter
+
+    # Learned price forecast (additive; numpy fallback always available)
+    try:
+        from app.ml.forecasting import forecast_locality
+
+        result["price_forecast"] = forecast_locality(prop.locality, prop.prop_type, 6)
+    except Exception as _e:
+        print(f"[forecast] skipped (non-fatal): {_e}")
+
     return result
 
 
@@ -925,6 +1019,23 @@ async def get_comps(
 
 
 @app.get(
+    "/api/v1/forecast/{locality}",
+    tags=["Market Data"],
+    summary="Learned price forecast (prophet/statsmodels/numpy) + confidence band",
+)
+@cache(expire=3600)
+async def get_forecast(
+    locality: str, prop_type: str = "2bhk_apartment", horizon: int = 6
+):
+    from app.ml.forecasting import forecast_locality
+
+    try:
+        return forecast_locality(locality, prop_type, min(max(horizon, 1), 18))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
     "/api/v1/trends/{locality}", tags=["Market Data"], summary="24-month price trend"
 )
 @cache(expire=3600)
@@ -965,6 +1076,313 @@ async def get_trends(
 )
 async def audit_recent(limit: int = 20, auth=Depends(get_api_key)):
     return {"assessments": get_recent_assessments(limit), "stats": get_audit_stats()}
+
+
+# ── MLOps: Registry · Outcomes · Drift · Retraining ─────────────────────────
+
+from typing import Optional as _Optional
+
+from pydantic import BaseModel as _BaseModel
+
+
+class OutcomeInput(_BaseModel):
+    request_id: str
+    realized_value: float
+    outcome_type: str = "sale"  # sale | auction_recovery | revaluation
+    realized_on: _Optional[str] = None
+    days_to_liquidate: _Optional[int] = None
+    notes: _Optional[str] = None
+
+
+@app.get("/api/v1/ml/registry", tags=["MLOps"], summary="Model registry + versions")
+async def ml_registry(auth=Depends(get_api_key)):
+    from app.ml.tracking import get_production_version, get_registry
+
+    return {"registry": get_registry(), "production": get_production_version()}
+
+
+@app.post(
+    "/api/v1/ml/registry/promote/{version}",
+    tags=["MLOps"],
+    summary="Promote a model version to Production (rollback by promoting older)",
+)
+async def ml_promote(version: str, auth=Depends(get_api_key)):
+    from app.ml.tracking import promote_to_production
+
+    try:
+        return {"promoted": promote_to_production(version)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post(
+    "/api/v1/outcomes",
+    tags=["MLOps"],
+    summary="Record a realized sale/recovery (closes the outcome loop)",
+)
+async def record_realized_outcome(payload: OutcomeInput, auth=Depends(get_api_key)):
+    from app.ml.outcomes import record_outcome
+
+    return record_outcome(
+        request_id=payload.request_id,
+        realized_value=payload.realized_value,
+        outcome_type=payload.outcome_type,
+        realized_on=payload.realized_on,
+        days_to_liquidate=payload.days_to_liquidate,
+        notes=payload.notes,
+    )
+
+
+@app.get(
+    "/api/v1/ml/performance",
+    tags=["MLOps"],
+    summary="True model performance vs realized outcomes (the metric that matters)",
+)
+async def ml_performance(auth=Depends(get_api_key)):
+    from app.ml.outcomes import outcome_performance
+
+    return outcome_performance()
+
+
+@app.get(
+    "/api/v1/ml/drift",
+    tags=["MLOps"],
+    summary="Feature drift report (PSI) — live predictions vs training data",
+)
+async def ml_drift(limit: int = 1000, auth=Depends(get_api_key)):
+    from app.ml.monitoring import compute_drift
+
+    return compute_drift(limit)
+
+
+@app.get(
+    "/api/v1/ml/drift/report.html",
+    tags=["MLOps"],
+    summary="Full Evidently drift report as HTML",
+)
+async def ml_drift_html(limit: int = 1000, auth=Depends(get_api_key)):
+    from app.ml.monitoring import evidently_report_html
+
+    html = evidently_report_html(limit)
+    if not html:
+        raise HTTPException(
+            status_code=404,
+            detail="Evidently report unavailable (need logged predictions + evidently installed).",
+        )
+    return FastAPIResponse(content=html, media_type="text/html")
+
+
+@app.get(
+    "/api/v1/ml/fairness",
+    tags=["MLOps"],
+    summary="Fair-lending bias audit (disparate impact by zone tier)",
+)
+async def ml_fairness(limit: int = 2000, auth=Depends(get_api_key)):
+    from app.ml.fairness import bias_audit
+
+    return bias_audit(limit)
+
+
+@app.post(
+    "/api/v1/ml/retrain",
+    tags=["MLOps"],
+    summary="Trigger gated retraining pipeline (async via Celery if available)",
+)
+async def ml_retrain(auto_promote: bool = True, auth=Depends(get_api_key)):
+    try:
+        from app.core.tasks import scheduled_retrain
+
+        task = scheduled_retrain.delay()
+        return {"job_id": task.id, "status": "submitted",
+                "poll": f"/api/v1/batch/status/{task.id}"}
+    except Exception:
+        # Celery/Redis unavailable — run synchronously (may be slow)
+        from app.ml.pipelines import retraining_pipeline
+
+        return retraining_pipeline(auto_promote=auto_promote)
+
+
+# ── RAG: policy/knowledge retrieval ─────────────────────────────────────────
+
+
+class RAGQuery(_BaseModel):
+    query: str
+    k: _Optional[int] = None
+
+
+@app.post("/api/v1/rag/query", tags=["RAG"], summary="Retrieve cited policy/knowledge snippets")
+@limiter.limit("20/minute")
+async def rag_query(request: Request, body: RAGQuery, auth=Depends(get_api_key)):
+    from app.services.rag import retrieve_context
+
+    snippets = retrieve_context(body.query, k=body.k)
+    return {"query": body.query, "results": snippets, "count": len(snippets)}
+
+
+@app.get("/api/v1/rag/stats", tags=["RAG"], summary="RAG corpus + backend status")
+async def rag_stats_endpoint(auth=Depends(get_api_key)):
+    from app.services.rag import rag_stats
+
+    return rag_stats()
+
+
+@app.post("/api/v1/rag/reindex", tags=["RAG"], summary="Re-embed the knowledge corpus")
+async def rag_reindex(auth=Depends(get_api_key)):
+    from app.services.rag import seed_knowledge
+
+    return seed_knowledge(force=True)
+
+
+# ── Agentic valuation (tool-calling agent + verifier) ───────────────────────
+
+
+@app.post(
+    "/api/v1/assess/agent",
+    tags=["Agentic"],
+    summary="Autonomous tool-calling valuation agent with a hallucination verifier",
+)
+@limiter.limit("10/minute")
+async def assess_agent(request: Request, prop: PropertyInput, auth=Depends(get_api_key)):
+    """
+    Runs an LLM agent that plans and calls real PropIQ tools (circle rate, AVM,
+    comps, ensemble, LTV, policy-RAG), then a verifier confirms every number is
+    traceable to a tool result. Falls back to a deterministic plan with no LLM.
+    """
+    from app.services.valuation_agent import run_valuation_agent
+    from app.services.verifier_agent import verify
+
+    agent_out = await run_valuation_agent(prop.model_dump())
+    verification = verify(agent_out.get("answer", ""), agent_out.get("tool_ledger", {}))
+    return {
+        "request_id": str(uuid.uuid4())[:8].upper(),
+        "planner": agent_out.get("planner"),
+        "answer": agent_out.get("answer"),
+        "agent_trace": agent_out.get("agent_trace"),
+        "tool_ledger": agent_out.get("tool_ledger"),
+        "verification": verification,
+    }
+
+
+# ── Real-time SSE streaming ─────────────────────────────────────────────────
+
+
+@app.post(
+    "/api/v1/assess/narrate/stream",
+    tags=["Streaming"],
+    summary="Stream the credit memo token-by-token (SSE)",
+)
+async def assess_narrate_stream(prop: PropertyInput, auth=Depends(get_api_key)):
+    from app.services.llm_narration import stream_credit_memo
+    from app.services.streaming import sse_response
+
+    result = await _run_assessment(prop)
+    return sse_response(stream_credit_memo(result))
+
+
+@app.post(
+    "/api/v1/agent/stream",
+    tags=["Streaming"],
+    summary="Stream the agent's plan, tool calls and verdict live (SSE)",
+)
+async def agent_stream(prop: PropertyInput, auth=Depends(get_api_key)):
+    from app.services.streaming import sse_response
+    from app.services.valuation_agent import run_valuation_agent
+    from app.services.verifier_agent import verify
+
+    async def _gen():
+        yield {"event": "plan", "message": "Agent starting tool-calling valuation"}
+        out = await run_valuation_agent(prop.model_dump())
+        for step in out.get("agent_trace", []):
+            yield {"event": "tool_call", "step": step.get("step"),
+                   "tool": step.get("tool"),
+                   "value": (step.get("result") or {}).get("value")}
+        v = verify(out.get("answer", ""), out.get("tool_ledger", {}))
+        yield {"event": "answer", "text": out.get("answer")}
+        yield {"event": "verification", "verified": v["verified"],
+               "unsupported_claims": v["unsupported_claims"]}
+        yield {"event": "done"}
+
+    return sse_response(_gen())
+
+
+@app.get(
+    "/api/v1/portfolio/stream",
+    tags=["Streaming"],
+    summary="Stream live portfolio health snapshots as they are assessed (SSE)",
+)
+async def portfolio_stream(auth=Depends(get_api_key)):
+    from app.services.chm_engine import assess_loan_health
+    from app.services.streaming import sse_response
+
+    async def _gen():
+        db = SessionLocal()
+        try:
+            loans = db.query(ActiveLoan).filter(ActiveLoan.status == "active").all()
+            yield {"event": "start", "total": len(loans)}
+            for i, loan in enumerate(loans):
+                try:
+                    snap = await assess_loan_health(loan)
+                    yield {"event": "snapshot", "index": i + 1,
+                           "loan_id": loan.loan_id, "risk_level": snap["risk_level"],
+                           "current_ltv": snap["current_ltv"], "delta_pct": snap["delta_pct"]}
+                except Exception as e:
+                    yield {"event": "error", "loan_id": loan.loan_id, "detail": str(e)[:120]}
+            yield {"event": "done"}
+        finally:
+            db.close()
+
+    return sse_response(_gen())
+
+
+# ── Fraud / duplicate detection (vector) ────────────────────────────────────
+
+
+@app.post(
+    "/api/v1/fraud/duplicate-check",
+    tags=["Risk"],
+    summary="Check a property against prior pledges for near-duplicates (vector)",
+)
+async def fraud_duplicate_check(prop: PropertyInput, auth=Depends(get_api_key)):
+    from app.ml.property_embeddings import find_near_duplicates
+
+    matches = find_near_duplicates({**prop.model_dump(), "locality": prop.locality})
+    return {"duplicate_count": len(matches), "matches": matches}
+
+
+@app.get(
+    "/api/v1/fraud/rings",
+    tags=["Risk"],
+    summary="Detect fraud rings — clusters of near-identical collateral",
+)
+async def fraud_rings(auth=Depends(get_api_key)):
+    from app.ml.knowledge_graph import fraud_rings as _rings
+
+    return _rings()
+
+
+# ── Knowledge graph: portfolio intelligence ─────────────────────────────────
+
+
+@app.get(
+    "/api/v1/graph/concentration",
+    tags=["Knowledge Graph"],
+    summary="Portfolio concentration risk (HHI by locality / zone / city)",
+)
+async def graph_concentration(auth=Depends(get_api_key)):
+    from app.ml.knowledge_graph import portfolio_concentration
+
+    return portfolio_concentration()
+
+
+@app.get(
+    "/api/v1/graph/developer-propagation",
+    tags=["Knowledge Graph"],
+    summary="Propagate zone/developer risk scores to linked loans",
+)
+async def graph_developer(auth=Depends(get_api_key)):
+    from app.ml.knowledge_graph import developer_grade_propagation
+
+    return developer_grade_propagation()
 
 
 # ── Chat Assistant ──────────────────────────────────────────────────────────
@@ -1169,17 +1587,11 @@ async def _extract_property_fields(message: str, api_key: str):
     summary="Groq-powered chat assistant with agentic auto-assessment",
 )
 @limiter.limit("10/minute")
-async def chat_assistant(request: Request, req: ChatRequest):
+async def chat_assistant(request: Request, req: ChatRequest, auth=Depends(get_api_key)):
     import os
-    from pathlib import Path as _Path
 
-    from dotenv import load_dotenv as _load_dotenv
-
-    _proj_root = _Path(__file__).parent.parent.parent
-    _load_dotenv(_proj_root / ".env", override=False)
-
+    # .env is loaded once at import time by config.py — no per-request reload.
     api_key = os.getenv("GROQ_API_KEY", "")
-    print(f"[Chat] GROQ_API_KEY: {'SET' if api_key else 'MISSING'}")
 
     # ── Build system prompt ────────────────────────────────────────────────
     system_msg = _CHAT_SYSTEM_PROMPT

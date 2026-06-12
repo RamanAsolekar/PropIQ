@@ -395,6 +395,58 @@ Full interactive documentation: `http://localhost:8000/docs`
 
 ---
 
+## 🤖 MLOps & AIML Platform
+
+PropIQ runs a full production-grade ML lifecycle, not just a model file.
+
+| Capability | Implementation | Endpoint / Location |
+| ---------- | -------------- | ------------------- |
+| **Feature store (train/serve parity)** | One canonical transform used by training AND serving — eliminates train/serve skew. Feast-backed (optional). | `app/ml/features.py`, `app/ml/feature_store.py`, `feature_repo/` |
+| **Experiment tracking** | MLflow (local file store by default; UI at `:5000`) | `app/ml/tracking.py` |
+| **Model registry + versioning** | Champion/challenger, stages, 1-click rollback | `GET /api/v1/ml/registry`, `POST /api/v1/ml/registry/promote/{version}` |
+| **Realized-outcome loop** | Log every prediction; record actual sale/recovery; compute TRUE error | `POST /api/v1/outcomes`, `GET /api/v1/ml/performance` |
+| **Drift monitoring** | PSI per feature + Evidently report | `GET /api/v1/ml/drift`, `GET /api/v1/ml/drift/report.html` |
+| **Multi-model ensemble** | AVM + sales-comparison (kNN) + income approach, reconciled + calibrated band | `app/ml/ensemble.py` (in every `/assess` response under `ensemble_valuation`) |
+| **Gated retraining** | data → train challenger → validate (MAPE + coverage gates) → promote only if it beats champion | `POST /api/v1/ml/retrain`, nightly/monthly Celery beat |
+| **Model governance** | Model card + Responsible-AI notes | [`backend/MODEL_CARD.md`](backend/MODEL_CARD.md) |
+
+> **Honesty note:** the model is currently trained on **synthetic** data, so the
+> ~7% CV MAPE is *not* field accuracy. The realized-outcome loop is the mechanism
+> that turns PropIQ into an empirically-grounded, self-improving system. See the
+> model card for the full disclosure.
+
+All MLOps services **degrade gracefully** — if MLflow/Feast/Redis are absent the
+app still boots and serves; telemetry never breaks a request.
+
+---
+
+## 🧬 Deep AIML Capabilities
+
+Beyond the MLOps spine, PropIQ ships a full modern AIML stack. **Every capability
+has a graceful fallback**, so the one-command demo runs with zero extra installs;
+installing the optional libs (chromadb, sentence-transformers, prophet, networkx)
+upgrades each to its "rich" tier.
+
+| Capability | What it does | Endpoint | Fallback when libs absent |
+| ---------- | ------------ | -------- | ------------------------- |
+| **RAG (grounded memos)** | Credit memos cite real RBI / internal-policy text from a vector knowledge base instead of free-form generation | `POST /api/v1/rag/query`, `GET /api/v1/rag/stats` | in-memory cosine + hashing embedder |
+| **Agentic valuation agent** | LLM **plans and calls real tools** (circle rate → AVM → comps → ensemble → LTV → policy-RAG) to value collateral | `POST /api/v1/assess/agent` | deterministic plan still runs every tool |
+| **Hallucination verifier** | Confirms **every number in the answer traces to a tool result**; flags unsupported claims | (in agent response `verification`) | regex numeric-trace check |
+| **SSE streaming** | Live token-by-token memo, live agent trace, live portfolio health | `POST /api/v1/assess/narrate/stream`, `POST /api/v1/agent/stream`, `GET /api/v1/portfolio/stream` | hand-rolled `StreamingResponse` |
+| **Learned forecasting** | Price forecast + confidence band (Prophet/Holt-Winters), momentum signal | `GET /api/v1/forecast/{locality}` | numpy trend+seasonal+residual CI |
+| **Vector fraud detection** | Embeds each property; flags near-duplicate pledges & cross-borrower fraud rings | `POST /api/v1/fraud/duplicate-check`, `GET /api/v1/fraud/rings` | in-memory cosine |
+| **Knowledge graph** | Portfolio concentration (HHI), developer-risk propagation, fraud-ring components | `GET /api/v1/graph/concentration`, `GET /api/v1/graph/developer-propagation` | dict adjacency + union-find |
+| **Fairness / bias audit** | Disparate-impact (80% rule) by zone tier — fair-lending guardrail | `GET /api/v1/ml/fairness` | pure numpy/pandas |
+
+**LLM provider** is pluggable behind `app/services/llm_provider.py` (Groq today;
+swap is a one-file change). The agent, verifier and RAG memos all route through it.
+
+> Example: `POST /api/v1/assess/agent` returns the agent's `agent_trace` (plan →
+> each tool call → observation), the full `tool_ledger`, and a `verification`
+> block proving every rupee figure is backed by a tool — not hallucinated.
+
+---
+
 ## 🛠️ Tech Stack
 
 | Layer                | Technology                                            |

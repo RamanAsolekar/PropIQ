@@ -210,3 +210,68 @@ def automated_health_check():
 
         traceback.print_exc()
         return {"status": "error", "error": str(e)}
+
+
+@celery_app.task(name="propiq.drift_check_and_retrain")
+def drift_check_and_retrain():
+    """
+    Scheduled MLOps loop: check feature drift; if drift breaches the alert
+    threshold, kick off the gated retraining pipeline (which only promotes a
+    challenger that beats the champion and passes calibration gates).
+    """
+    try:
+        from app.ml.monitoring import compute_drift
+        from app.ml.pipelines import retraining_pipeline
+
+        drift = compute_drift()
+        if drift.get("retraining_recommended"):
+            result = retraining_pipeline(auto_promote=True)
+            return {"drift": drift, "retraining": result}
+        return {"drift": drift, "retraining": "skipped (no significant drift)"}
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+
+
+@celery_app.task(name="propiq.scheduled_retrain")
+def scheduled_retrain():
+    """Unconditional monthly retraining (gated promotion)."""
+    try:
+        from app.ml.pipelines import retraining_pipeline
+
+        return retraining_pipeline(auto_promote=True)
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+
+
+@celery_app.task(name="propiq.monthly_bias_audit")
+def monthly_bias_audit():
+    """Monthly fair-lending bias audit; emails risk team if disparate impact fails."""
+    try:
+        from app.ml.fairness import bias_audit
+
+        result = bias_audit()
+        if result.get("disparate_impact_pass_80pct_rule") is False:
+            try:
+                from app.services.email_alerts import send_alert_email
+
+                send_alert_email(
+                    {"loan_id": "BIAS-AUDIT", "borrower_name": "Fair Lending",
+                     "borrower_email": "", "locality": "portfolio", "prop_type": "audit",
+                     "size_sqft": 0, "age_years": 0, "loan_amount": 0, "original_value": 0},
+                    {"risk_level": "red", "current_value": 0, "current_ltv": 0,
+                     "delta_pct": 0},
+                )
+            except Exception:
+                pass
+        return result
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}

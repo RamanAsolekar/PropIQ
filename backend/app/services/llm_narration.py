@@ -47,9 +47,29 @@ async def generate_credit_memo(assessment: dict) -> dict:
     drivers = assessment.get("key_drivers", [])
     enrichment = assessment.get("enrichment", {})
 
+    # ── RAG grounding: retrieve relevant RBI / internal-policy snippets ──────
+    grounding_block = ""
+    citations = []
+    try:
+        from app.services.rag import build_grounding_block, retrieve_context
+
+        zone = enrichment.get("zone_tier", "")
+        ptype = assessment.get("prop_type", "").replace("_", " ")
+        rag_query = (
+            f"LAP LTV norms and credit policy for a {ptype} in a {zone} zone, "
+            f"market value {assessment.get('market_value_mid', 0)}, "
+            f"resale potential {rpi}, risk flags {len(flags)}"
+        )
+        snippets = retrieve_context(rag_query)
+        grounding_block = build_grounding_block(snippets)
+        citations = [s["citation"] for s in snippets]
+    except Exception as _e:
+        print(f"[memo] RAG grounding skipped (non-fatal): {_e}")
+
     prompt = f"""You are a senior credit analyst at Poonawalla Fincorp writing a collateral file note for a LAP (Loan Against Property) application.
 
 Based on the following PropIQ AI assessment, write a concise professional credit memo. Use plain English. Be specific with numbers. Sound like an experienced banker, not an AI.
+{('Ground every regulatory/policy claim in the POLICY CONTEXT below and cite the [source] tag inline.' + chr(10) + grounding_block) if grounding_block else ''}
 
 ASSESSMENT DATA:
 - Property: {assessment.get('prop_type','').replace('_',' ').title()} in {assessment.get('locality','')}, Pune
@@ -89,10 +109,52 @@ Write EXACTLY this JSON structure (no markdown, no preamble):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
-        return json.loads(text)
+        memo = json.loads(text)
+        # Surface the policy sources the memo was grounded in (RAG provenance)
+        if citations:
+            memo["policy_citations"] = sorted(set(citations))
+            memo["grounded"] = True
+        return memo
     except Exception as e:
         print(f"LLM narration failed: {e} — using fallback")
-        return _fallback_memo(assessment)
+        memo = _fallback_memo(assessment)
+        if citations:
+            memo["policy_citations"] = sorted(set(citations))
+        return memo
+
+
+async def stream_credit_memo(assessment: dict):
+    """
+    Async generator yielding credit-memo text deltas for SSE streaming.
+    Falls back to yielding the deterministic memo in chunks if no LLM.
+    """
+    from app.services import llm_provider
+
+    mv = assessment.get("market_value_range", [0, 0])
+    rpi = assessment.get("resale_potential_index", 0)
+    flags = assessment.get("risk_flags", [])
+    prompt = (
+        "Write a concise professional LAP collateral credit memo (plain English, "
+        "experienced banker tone) for: "
+        f"{assessment.get('prop_type','').replace('_',' ').title()} in "
+        f"{assessment.get('locality','')}. Market value {fmt_inr(mv[0])}–{fmt_inr(mv[1])}, "
+        f"RPI {rpi}/100, {len(flags)} risk flag(s). Cover summary, recommendation, "
+        "key risks. 4-6 sentences."
+    )
+    if llm_provider.is_available():
+        yield {"event": "start", "mode": "llm"}
+        async for delta in llm_provider.chat_stream(
+            [{"role": "user", "content": prompt}], model_tier="reason", max_tokens=400
+        ):
+            yield {"event": "token", "text": delta}
+        yield {"event": "done"}
+    else:
+        memo = _fallback_memo(assessment)
+        yield {"event": "start", "mode": "fallback"}
+        for part in [memo["summary"], " ", memo["recommendation"], " ",
+                     memo["risk_narrative"]]:
+            yield {"event": "token", "text": part}
+        yield {"event": "done"}
 
 
 def _fallback_memo(assessment: dict) -> dict:

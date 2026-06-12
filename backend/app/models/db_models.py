@@ -114,3 +114,50 @@ class CollateralHealthSnapshot(Base):
     alert_fired = Column(Integer, default=0)
     email_sent = Column(Integer, default=0)
     snapshot_detail = Column(JSON, nullable=True)
+
+
+class PredictionLog(Base):
+    """
+    Every model prediction is logged here with its feature vector + model version.
+    This is the foundation of the realized-outcome loop and drift monitoring —
+    without it the model can never be validated against reality (audit gap G2).
+    """
+
+    __tablename__ = "prediction_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    model_version = Column(String, index=True, nullable=True)
+    feature_schema_version = Column(String, nullable=True)
+    locality = Column(String, index=True, nullable=True)
+    prop_type = Column(String, index=True, nullable=True)
+    predicted_value_mid = Column(Float, nullable=False)
+    predicted_p10 = Column(Float, nullable=True)
+    predicted_p90 = Column(Float, nullable=True)
+    confidence_score = Column(Float, nullable=True)
+    resale_potential_index = Column(Float, nullable=True)
+    feature_vector = Column(JSON, nullable=True)  # for drift reference
+    endpoint = Column(String, default="/assess")
+
+
+class RealizedOutcome(Base):
+    """
+    The ground truth: what the property ACTUALLY sold / was recovered for.
+    Joined back to PredictionLog by request_id to compute true error and feed
+    automated retraining. This is the proprietary data flywheel.
+    """
+
+    __tablename__ = "realized_outcomes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String, index=True, nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now())
+    outcome_type = Column(String, nullable=False)  # sale | auction_recovery | revaluation
+    realized_value = Column(Float, nullable=False)
+    realized_on = Column(DateTime, nullable=True)
+    days_to_liquidate = Column(Integer, nullable=True)
+    notes = Column(Text, nullable=True)
+    # Computed at write time for fast querying
+    abs_pct_error = Column(Float, nullable=True)
+    signed_pct_error = Column(Float, nullable=True)

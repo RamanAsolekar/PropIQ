@@ -1,4 +1,7 @@
 fastapi==0.111.0
+# Pin starlette to FastAPI 0.111's compatible range so optional heavy deps
+# (e.g. chromadb) can't silently upgrade it and break the app.
+starlette==0.37.2
 uvicorn[standard]==0.29.0
 pydantic==2.7.1
 python-multipart==0.0.9
@@ -14,9 +17,9 @@ tenacity==8.2.3
 xgboost==2.0.3
 shap==0.45.0
 pillow==10.3.0
-transformers==4.40.0
-torch==2.3.0
-torchvision==0.18.0
+# NOTE: torch/torchvision/transformers were unused dead weight (~2GB). CV runs
+# on the hosted Groq VLM, not a local CLIP model. Removed to slim the image.
+# Re-add only if you bring CV inference in-house.
 reportlab==4.1.0
 python-jose[cryptography]==3.3.0
 geopy==2.4.1
@@ -35,3 +38,23 @@ redis==4.5.5
 slowapi==0.1.9
 fastapi-cache2[redis]==0.2.1
 gunicorn==22.0.0
+
+# Phase 3: MLOps stack — experiment tracking, model registry, drift monitoring.
+# MLflow defaults to a LOCAL FILE STORE (no server required to run PropIQ).
+setuptools<81  # mlflow needs pkg_resources; pin avoids the 81+ removal
+mlflow==2.14.1
+evidently==0.4.27
+# Feast is optional & heavy. Enable via ENABLE_FEAST=true after installing:
+# feast==0.40.0
+
+# Phase 4: Deep AIML capability layer.
+# ALL OPTIONAL — PropIQ runs with none of these installed (graceful fallbacks:
+# memory vector store, hashing embedder, numpy forecaster, dict graph, numpy
+# fairness, hand-rolled SSE). Install to unlock the "rich" tier.
+# chromadb==0.5.3              # vector store (else in-memory numpy cosine)
+# sentence-transformers==3.0.1 # real embeddings (else deterministic hashing)
+# prophet==1.1.5               # forecasting (else statsmodels/numpy)
+# statsmodels==0.14.2          # forecasting (else numpy trend+seasonal)
+# networkx==3.3                # knowledge graph (else dict adjacency)
+# fairlearn==0.10.0            # richer fairness metrics (else numpy)
+# sse-starlette==2.1.0         # SSE helper (else hand-rolled StreamingResponse)

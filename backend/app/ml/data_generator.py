@@ -16,6 +16,9 @@ if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
 from app.data.india_circle_rates import ALL_CIRCLE_RATES, ZONE_MULTIPLIERS
+# Canonical feature transform — training MUST derive model features the same way
+# serving does, so we import the single source of truth instead of duplicating it.
+from app.ml.features import build_feature_row
 
 np.random.seed(42)
 
@@ -129,7 +132,9 @@ def generate_record(locality: str, zone_data: dict, prop_type: str) -> dict:
         rental_yield_signal(prop_type, zone_tier) if occupancy == "rented" else 0.0
     )
 
-    # Market signals & Deep Liquidity Features
+    # Market signals & Deep Liquidity Features (RAW signals — legitimate to
+    # synthesize. The MODEL features are derived from these via the canonical
+    # transform below, exactly as serving does.)
     listing_density = np.random.uniform(0.2, 0.9)
     if zone_tier == "prime":
         listing_density = min(1.0, listing_density + 0.2)
@@ -138,30 +143,47 @@ def generate_record(locality: str, zone_data: dict, prop_type: str) -> dict:
     micro_market_cycle = np.random.choice(
         ["expansion", "stable", "contraction"], p=[0.3, 0.5, 0.2]
     )
-    cycle_encoded = {"expansion": 2, "stable": 1, "contraction": 0}[micro_market_cycle]
-
-    bid_ask_spread_pct = (
-        np.random.uniform(2.0, 15.0)
+    # Raw market signals that the canonical transform consumes
+    yoy_price_growth_pct = {
+        "expansion": np.random.uniform(7.5, 14.0),
+        "stable": np.random.uniform(3.0, 6.5),
+        "contraction": np.random.uniform(-2.0, 1.5),
+    }[micro_market_cycle]
+    months_of_inventory = (
+        np.random.uniform(10.0, 24.0)
         if micro_market_cycle == "contraction"
-        else np.random.uniform(1.0, 7.0)
+        else np.random.uniform(2.0, 9.0)
     )
-    buyer_pool_depth_index = min(
-        100, max(0, (infra_score * 0.4 + listing_density * 60 + np.random.normal(0, 5)))
-    )
-    comp_velocity_score = (
-        np.random.uniform(3.0, 10.0)
+    listing_velocity = (
+        np.random.uniform(0.5, 1.0)
         if zone_tier == "prime"
-        else np.random.uniform(1.0, 7.0)
+        else np.random.uniform(0.15, 0.7)
     )
 
-    # Financials
     depreciation = age_depreciation(age_years)
-    rental_cap_rate = (
-        (rental_yield / (1 + age_years * 0.02)) if rental_yield > 0 else 0.0
+
+    # ── Canonical model features (identical engineering to serving) ─────────
+    feat = build_feature_row(
+        {
+            "prop_type": prop_type,
+            "zone_tier": zone_tier,
+            "size_sqft": size_sqft,
+            "age_years": age_years,
+            "floor_num": floor_num,
+            "is_freehold": is_freehold,
+            "is_rera_registered": is_rera_registered,
+            "rental_yield_pct": rental_yield,
+            "infra_score": infra_score,
+            "listing_density": listing_density,
+            "is_standard_config": is_standard_config,
+            "circle_rate_per_sqft": circle_rate,
+            "location_multiplier": location_mult,
+            "neighbourhood_quality_score": neighbourhood_quality_score,
+            "yoy_price_growth_pct": yoy_price_growth_pct,
+            "months_of_inventory": months_of_inventory,
+            "listing_velocity": listing_velocity,
+        }
     )
-    developer_grade = np.random.choice(["A", "B", "C"], p=[0.3, 0.5, 0.2])
-    developer_grade_encoded = {"A": 3, "B": 2, "C": 1}[developer_grade]
-    floor_zone_premium = floor_num * (0.01 if zone_tier == "prime" else 0.005)
 
     # Compute modifiers
     floor_factor = floor_premium(floor_num, prop_type)
@@ -193,14 +215,14 @@ def generate_record(locality: str, zone_data: dict, prop_type: str) -> dict:
     )
     total_market_value = price_per_sqft * size_sqft
 
-    # Liquidity score (0-100)
+    # Liquidity score (0-100) — uses canonical-feature values from `feat`
     liquidity_raw = (
         (infra_score * 0.20)
         + (is_standard_config * 100 * 0.15)
         + (is_freehold * 100 * 0.15)
         + (listing_density * 100 * 0.10)
-        + (buyer_pool_depth_index * 0.20)
-        + (comp_velocity_score * 10 * 0.10)
+        + (feat["buyer_pool_depth_index"] * 0.20)
+        + (feat["comp_velocity_score"] * 10 * 0.10)
         + (max(0, 100 - age_years * 1.5) * 0.10)
     )
     if micro_market_cycle == "contraction":
@@ -248,19 +270,24 @@ def generate_record(locality: str, zone_data: dict, prop_type: str) -> dict:
         "listing_density": round(listing_density, 3),
         "is_standard_config": is_standard_config,
         "circle_rate_per_sqft": circle_rate,
-        # Extended Features
-        "micro_market_cycle": cycle_encoded,
-        "bid_ask_spread_pct": round(bid_ask_spread_pct, 2),
-        "buyer_pool_depth_index": round(buyer_pool_depth_index, 1),
-        "comp_velocity_score": round(comp_velocity_score, 2),
-        "rental_cap_rate": round(rental_cap_rate, 3),
-        "developer_grade": developer_grade_encoded,
-        "floor_zone_premium": round(floor_zone_premium, 3),
-        # Derived features
-        "location_multiplier": round(location_mult, 3),
-        "age_depreciation_factor": round(depreciation, 3),
-        "zone_tier_encoded": {"prime": 2, "mid": 1, "peripheral": 0}[zone_tier],
+        # Extended + derived model features — emitted from the CANONICAL
+        # transform (`feat`) so the training CSV columns are byte-for-byte the
+        # same engineering the model receives at serve time.
+        "micro_market_cycle": feat["micro_market_cycle"],
+        "bid_ask_spread_pct": round(feat["bid_ask_spread_pct"], 2),
+        "buyer_pool_depth_index": round(feat["buyer_pool_depth_index"], 1),
+        "comp_velocity_score": round(feat["comp_velocity_score"], 2),
+        "rental_cap_rate": round(feat["rental_cap_rate"], 3),
+        "developer_grade": feat["developer_grade"],
+        "floor_zone_premium": round(feat["floor_zone_premium"], 3),
+        "location_multiplier": round(feat["location_multiplier"], 3),
+        "age_depreciation_factor": round(feat["age_depreciation_factor"], 3),
+        "zone_tier_encoded": feat["zone_tier_encoded"],
         "neighbourhood_quality_score": neighbourhood_quality_score,
+        # Raw market signals (kept for monitoring / Feast offline store)
+        "yoy_price_growth_pct": round(yoy_price_growth_pct, 2),
+        "months_of_inventory": round(months_of_inventory, 1),
+        "listing_velocity": round(listing_velocity, 3),
         # Targets
         "price_per_sqft": round(price_per_sqft, 1),
         "total_market_value": round(total_market_value, 0),

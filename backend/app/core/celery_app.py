@@ -37,4 +37,19 @@ celery_app.conf.beat_schedule = {
         # Run at 2:00 AM on the 1st of every month
         "schedule": crontab(minute=0, hour=2, day_of_month=1),
     },
+    # MLOps: nightly drift check that triggers gated retraining when drift is high
+    "nightly-drift-check-and-retrain": {
+        "task": "propiq.drift_check_and_retrain",
+        "schedule": crontab(minute=30, hour=3),
+    },
+    # MLOps: monthly unconditional retrain (gated promotion) on the 1st at 4 AM
+    "monthly-scheduled-retrain": {
+        "task": "propiq.scheduled_retrain",
+        "schedule": crontab(minute=0, hour=4, day_of_month=1),
+    },
+    # Responsible AI: monthly fair-lending bias audit on the 2nd at 5 AM
+    "monthly-bias-audit": {
+        "task": "propiq.monthly_bias_audit",
+        "schedule": crontab(minute=0, hour=5, day_of_month=2),
+    },
 }

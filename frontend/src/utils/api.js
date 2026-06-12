@@ -113,6 +113,136 @@ export const getAuditLog = async () => {
   return data;
 };
 
+// ── Deep AIML capabilities ──────────────────────────────────────────────────
+
+// Agentic, tool-calling valuation with a hallucination verifier
+export const assessWithAgent = async (formData) => {
+  const { data } = await api.post("/api/v1/assess/agent", formData);
+  return data;
+};
+
+// RAG: query the policy/knowledge base
+export const ragQuery = async (query, k) => {
+  const { data } = await api.post("/api/v1/rag/query", { query, k });
+  return data;
+};
+
+export const ragStats = async () => {
+  const { data } = await api.get("/api/v1/rag/stats");
+  return data;
+};
+
+// Learned price forecast (+ confidence band)
+export const getForecast = async (locality, propType, horizon = 6) => {
+  const { data } = await api.get(
+    `/api/v1/forecast/${encodeURIComponent(locality)}`,
+    { params: { prop_type: propType, horizon } },
+  );
+  return data;
+};
+
+// Vector duplicate / fraud detection
+export const checkDuplicate = async (formData) => {
+  const { data } = await api.post("/api/v1/fraud/duplicate-check", formData);
+  return data;
+};
+
+export const getFraudRings = async () => {
+  const { data } = await api.get("/api/v1/fraud/rings");
+  return data;
+};
+
+// Knowledge graph: portfolio concentration + developer propagation
+export const getConcentration = async () => {
+  const { data } = await api.get("/api/v1/graph/concentration");
+  return data;
+};
+
+export const getDeveloperPropagation = async () => {
+  const { data } = await api.get("/api/v1/graph/developer-propagation");
+  return data;
+};
+
+// Fair-lending bias audit
+export const getFairnessAudit = async () => {
+  const { data } = await api.get("/api/v1/ml/fairness");
+  return data;
+};
+
+// MLOps: registry, performance, drift
+export const getModelRegistry = async () => {
+  const { data } = await api.get("/api/v1/ml/registry");
+  return data;
+};
+
+export const getModelPerformance = async () => {
+  const { data } = await api.get("/api/v1/ml/performance");
+  return data;
+};
+
+export const getDriftReport = async () => {
+  const { data } = await api.get("/api/v1/ml/drift");
+  return data;
+};
+
+// SSE helpers — stream the credit memo / agent trace via fetch + ReadableStream.
+// (EventSource only supports GET; these endpoints are POST, so we stream fetch.)
+export const streamCreditMemo = async (formData, onEvent) => {
+  const resp = await fetch(`${BASE_URL}/api/v1/assess/narrate/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": DEMO_KEY },
+    body: JSON.stringify(formData),
+  });
+  await consumeSSE(resp, onEvent);
+};
+
+export const streamAgent = async (formData, onEvent) => {
+  const resp = await fetch(`${BASE_URL}/api/v1/agent/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": DEMO_KEY },
+    body: JSON.stringify(formData),
+  });
+  await consumeSSE(resp, onEvent);
+};
+
+// Live portfolio health stream (GET => can also use EventSource)
+export const streamPortfolio = (onEvent) => {
+  const es = new EventSource(
+    `${BASE_URL}/api/v1/portfolio/stream`,
+    { withCredentials: false },
+  );
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch {
+      /* ignore */
+    }
+  };
+  return es; // caller calls es.close()
+};
+
+async function consumeSSE(resp, onEvent) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const part of parts) {
+      const line = part.replace(/^data:\s?/, "").trim();
+      if (!line) continue;
+      try {
+        onEvent(JSON.parse(line));
+      } catch {
+        onEvent({ raw: line });
+      }
+    }
+  }
+}
+
 // ── Async Batch (Celery) ───────────────────────────────────────────────────
 export const submitBatchAsync = async (properties) => {
   const { data } = await api.post("/api/v1/assess/batch/async", properties);
