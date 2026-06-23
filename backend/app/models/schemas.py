@@ -5,7 +5,7 @@ All request and response schemas for the API.
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ── Request Models ─────────────────────────────────────────────────────────
 
@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 class PropertyInput(BaseModel):
     locality: str = Field(
         ...,
-        example="Baner",
         description="Pune locality. Supported: Baner, Kothrud, Koregaon Park, Wakad, Hinjewadi, Hadapsar, Wagholi, Viman Nagar, Shivajinagar, Aundh, Pimpri, Chinchwad, Katraj, Talegaon, Chakan, Ambegaon",
     )
     prop_type: Literal[
@@ -29,49 +28,43 @@ class PropertyInput(BaseModel):
         "factory",
     ] = Field(
         ...,
-        example="2bhk_apartment",
         description="One of: 1bhk_apartment, 2bhk_apartment, 3bhk_apartment, 4bhk_apartment, villa, shop, office, plot, warehouse, factory",
     )
     size_sqft: float = Field(
-        ..., gt=100, lt=50000, example=850, description="Carpet/built-up area in sqft"
+        ..., gt=100, lt=50000, description="Carpet/built-up area in sqft"
     )
     age_years: float = Field(
-        ..., ge=0, le=80, example=8, description="Building age in years"
+        ..., ge=0, le=80, description="Building age in years"
     )
     floor_num: int = Field(
-        default=3, ge=0, le=50, example=3, description="Floor number (0 = ground)"
+        default=3, ge=0, le=50, description="Floor number (0 = ground)"
     )
     is_freehold: int = Field(
-        default=1, ge=0, le=1, example=1, description="1=Freehold, 0=Leasehold"
+        default=1, ge=0, le=1, description="1=Freehold, 0=Leasehold"
     )
     is_rera_registered: int = Field(
         default=1,
         ge=0,
         le=1,
-        example=1,
         description="1=RERA registered, 0=Not registered",
     )
     occupancy: Literal["self_occupied", "rented", "vacant"] = Field(
         default="self_occupied",
-        example="self_occupied",
         description="self_occupied | rented | vacant",
     )
     rental_yield_pct: float = Field(
         default=0.0,
         ge=0,
         le=15,
-        example=3.5,
         description="Annual rental yield % (if rented)",
     )
     # Gap 5 fix: Accept coordinates directly to skip geocoding
     geo_lat: Optional[float] = Field(
         default=None,
-        example=18.559,
         description="Latitude (optional — skips geocoding if provided)",
     )
     geo_lon: Optional[float] = Field(
         default=None,
-        example=73.787,
         description="Longitude (optional — skips geocoding if provided)",
     )
     has_clear_title: int = Field(
@@ -87,8 +80,8 @@ class PropertyInput(BaseModel):
         default=1, ge=0, le=1, description="1=zoning/use approvals available"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "locality": "Baner",
                 "prop_type": "2bhk_apartment",
@@ -107,6 +100,7 @@ class PropertyInput(BaseModel):
                 "zoning_approved": 1,
             }
         }
+    )
 
 
 # ── Response Models ────────────────────────────────────────────────────────
@@ -171,8 +165,12 @@ class ValuationResponse(BaseModel):
     processing_time_ms: int
     model_mape_pct: Optional[float]
 
-    class Config:
-        json_schema_extra = {
+    # protected_namespaces=() silences the "model_mape_pct conflicts with the
+    # protected 'model_' namespace" warning; this is a metric field, not a
+    # Pydantic model attribute.
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra={
             "example": {
                 "request_id": "A1B2C3D4",
                 "locality": "Baner",
@@ -212,7 +210,8 @@ class ValuationResponse(BaseModel):
                 "processing_time_ms": 312,
                 "model_mape_pct": 8.3,
             }
-        }
+        },
+    )
 
 
 class LocalityInfo(BaseModel):

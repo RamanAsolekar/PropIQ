@@ -248,6 +248,13 @@ class PropIQModel:
         log_p50 = self.model_p50.predict(X)[0]
         log_p90 = self.model_p90.predict(X)[0]
 
+        # Enforce quantile monotonicity (anti-crossing). The three quantile
+        # models are trained independently, so XGBoost can return crossed
+        # predictions (e.g. P50 > P90) — which would surface an inverted price
+        # range to underwriters. Sorting guarantees P10 <= P50 <= P90 while
+        # preserving the median point estimate in the typical (non-crossed) case.
+        log_p10, log_p50, log_p90 = sorted((log_p10, log_p50, log_p90))
+
         p10_sqft = np.expm1(log_p10)
         p50_sqft = np.expm1(log_p50)
         p90_sqft = np.expm1(log_p90)
@@ -334,8 +341,11 @@ class PropIQModel:
             "estimated_time_to_sell_days": liquidity_result["liquidity_profile"][
                 "estimated_time_to_sell_days"
             ],
+            # Report the *real* cross-validated MAPE, or None if the model was
+            # not validated. (Previously this fell back to a hardcoded 8.3%,
+            # which fabricated an accuracy figure for an unvalidated model.)
             "model_mape_pct": (
-                round(getattr(self, "mape_validation", 8.3) * 100, 1)
+                round(self.mape_validation * 100, 1)
                 if getattr(self, "mape_validation", None)
                 else None
             ),

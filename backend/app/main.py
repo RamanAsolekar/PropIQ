@@ -104,16 +104,23 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ── Database Initialization ────────────────────────────────────────────────
-@app.on_event("startup")
-async def on_startup():
-    """Initialize database tables, cache, seed CHM demo loans, and run the
-    initial portfolio health check on startup.
+from contextlib import asynccontextmanager
 
-    NOTE: Previously the seed + initial health-check calls were placed *after*
-    a `return` inside the global exception handler below, making them dead
-    (unreachable) code — so the CHM dashboard was never seeded on boot. They
-    now live here, where they actually run.
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Application startup/shutdown.
+
+    Initializes database tables, cache, seeds CHM demo loans, and runs the
+    initial portfolio health check. Uses the modern lifespan API (the older
+    @app.on_event("startup") hook is deprecated in FastAPI/Starlette).
     """
+    await on_startup()
+    yield
+    # (No teardown actions required; Redis/DB clients are process-lived.)
+
+
+async def on_startup():
     Base.metadata.create_all(bind=engine)
     print("Database tables initialized.")
 
@@ -151,6 +158,12 @@ async def on_startup():
         print("Initial CHM health check complete.")
     except Exception as e:
         print(f"Initial CHM health check failed (non-fatal): {e}")
+
+
+# Register the lifespan on the already-constructed app. (Assigning the
+# lifespan context after construction is supported by Starlette's router and
+# avoids reordering the entire module to pass lifespan= into FastAPI().)
+app.router.lifespan_context = lifespan
 
 
 @app.exception_handler(Exception)
