@@ -62,14 +62,21 @@ def calculate_ltv(
     # PFL conservative LTV
     pfl_ltv = PFL_CONSERVATIVE_LTV.get(zone_tier, 0.65)
 
-    # Adjust for risk flags
+    # Adjust for risk flags. risk_cap is a HARD ceiling that later dynamic
+    # (liquidity) boosts must not exceed — previously the liquidity bonus could
+    # lift a high-severity-flagged property back above its risk cap (e.g. a
+    # 1-high-flag property capped at 60% was boosted to 70%), silently undoing
+    # the credit-risk haircut.
     high_flags = [f for f in risk_flags if f.get("severity") == "high"]
+    risk_cap = 1.0
     if len(high_flags) >= 2:
-        pfl_ltv = min(pfl_ltv, 0.50)
+        risk_cap = 0.50
+        pfl_ltv = min(pfl_ltv, risk_cap)
         flag_note = f"{len(high_flags)} high-severity flags — LTV capped at 50%"
     elif len(high_flags) == 1:
-        pfl_ltv = min(pfl_ltv, 0.60)
-        flag_note = f"1 high-severity flag — conservative LTV applied"
+        risk_cap = 0.60
+        pfl_ltv = min(pfl_ltv, risk_cap)
+        flag_note = "1 high-severity flag — conservative LTV applied"
     elif len(risk_flags) > 0:
         pfl_ltv = pfl_ltv - 0.05
         flag_note = f"{len(risk_flags)} risk flag(s) — 5% LTV haircut applied"
@@ -91,6 +98,12 @@ def calculate_ltv(
         flag_note += f" | Dynamic LTV: -15% penalty for low liquidity ({percentile_band}, RPI {resale_potential_index:.1f})"
     else:
         flag_note += f" | Dynamic LTV: Standard tier ({percentile_band}, RPI {resale_potential_index:.1f})"
+
+    # Enforce the risk-flag ceiling AFTER any liquidity boost so a high-severity
+    # flag cannot be overridden by good liquidity.
+    if pfl_ltv > risk_cap:
+        pfl_ltv = risk_cap
+        flag_note += f" | Risk cap enforced: LTV held at {risk_cap*100:.0f}% despite liquidity"
 
     # NPA Risk Cap
     if npa_risk == "high":

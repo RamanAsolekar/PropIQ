@@ -88,3 +88,33 @@ def test_ltv_logic():
         [{"severity": "high"}],
     )
     assert ltv_risk["recommended_ltv_pct"] < 80.0
+
+
+def test_ltv_liquidity_boost_cannot_override_risk_cap():
+    """Regression: a high-severity risk flag caps LTV at 60%. The dynamic
+    liquidity boost (+10% for highly liquid collateral) previously lifted such
+    a property back to 70%, silently undoing the risk haircut."""
+    from app.services.ltv_audit import calculate_ltv
+
+    high_liquidity = {"percentile_band": "P90", "npa_risk_signal": "low"}
+
+    one_flag = calculate_ltv(
+        10000000, [8000000, 9000000], "residential_apartment", "prime",
+        [{"severity": "high"}], resale_potential_index=90,
+        liquidity_profile=high_liquidity,
+    )
+    assert one_flag["recommended_ltv_pct"] <= 60.0
+
+    two_flags = calculate_ltv(
+        10000000, [8000000, 9000000], "residential_apartment", "prime",
+        [{"severity": "high"}, {"severity": "high"}], resale_potential_index=95,
+        liquidity_profile={"percentile_band": "P99", "npa_risk_signal": "low"},
+    )
+    assert two_flags["recommended_ltv_pct"] <= 50.0
+
+    # A clean property still earns the liquidity boost (bounded by the RBI cap).
+    clean = calculate_ltv(
+        10000000, [8000000, 9000000], "residential_apartment", "prime",
+        [], resale_potential_index=90, liquidity_profile=high_liquidity,
+    )
+    assert clean["recommended_ltv_pct"] >= one_flag["recommended_ltv_pct"]
