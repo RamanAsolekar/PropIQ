@@ -52,6 +52,32 @@ def test_rag_seed_and_retrieve_with_citations():
     assert all("citation" in h and "snippet" in h for h in hits)
 
 
+def test_rag_chunks_overlap():
+    """Adjacent chunks must share words so facts straddling a boundary stay
+    retrievable (previously chunks had zero overlap despite the docstring)."""
+    from app.services.rag import _CHUNK_OVERLAP, _chunk
+
+    body = "# Section\n" + " ".join(f"w{i}" for i in range(300))
+    chunks = _chunk(body, "doc")
+    assert len(chunks) >= 2
+    shared = set(chunks[0]["text"].split()) & set(chunks[1]["text"].split())
+    assert len(shared) == _CHUNK_OVERLAP
+
+
+def test_rag_retrieval_scores_are_valid_cosine():
+    """Similarity scores must be valid cosine values in [-1, 1] and consistent
+    regardless of the active vector backend (memory vs chroma-cosine)."""
+    from app.services.rag import retrieve_context, seed_knowledge
+
+    seed_knowledge()
+    hits = retrieve_context("LTV cap for loans above 75 lakh", k=3)
+    assert hits, "expected at least one hit"
+    assert all(-1.0 <= h["score"] <= 1.0 for h in hits)
+    # Scores must be sorted descending (most relevant first).
+    scores = [h["score"] for h in hits]
+    assert scores == sorted(scores, reverse=True)
+
+
 # ── Agent + verifier ────────────────────────────────────────────────────────
 
 

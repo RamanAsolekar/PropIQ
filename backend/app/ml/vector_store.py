@@ -100,7 +100,15 @@ class _ChromaCollection:
 
         self.name = name
         self._client = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
-        self._col = self._client.get_or_create_collection(name=name)
+        # Force COSINE distance. Chroma defaults to squared-L2, which (a) does
+        # not match the in-memory backend's true cosine — so scores were on
+        # different scales across backends — and (b) makes the `1 - distance`
+        # score conversion below invalid. With cosine space, distance is in
+        # [0, 2] and `1 - distance` is a proper cosine similarity in [-1, 1],
+        # identical to the memory backend.
+        self._col = self._client.get_or_create_collection(
+            name=name, metadata={"hnsw:space": "cosine"}
+        )
 
     def upsert(self, doc_id: str, text: str, metadata: dict):
         vec = embed([text])[0].tolist()
@@ -119,7 +127,8 @@ class _ChromaCollection:
         metas = (res.get("metadatas") or [[]])[0]
         dists = (res.get("distances") or [[]])[0]
         for i, _id in enumerate(ids):
-            # chroma returns distance; convert to a similarity-ish score
+            # Cosine space (set at collection creation): distance in [0, 2],
+            # so similarity = 1 - distance in [-1, 1], matching the memory backend.
             dist = dists[i] if i < len(dists) else 0.0
             out.append({"id": _id, "text": docs[i] if i < len(docs) else "",
                         "metadata": metas[i] if i < len(metas) else {},

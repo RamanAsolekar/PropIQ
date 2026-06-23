@@ -24,11 +24,19 @@ logger = logging.getLogger(__name__)
 
 KNOWLEDGE_COLLECTION = "propiq_knowledge"
 _CHUNK_TOKENS = 120  # approx words per chunk
+_CHUNK_OVERLAP = 30  # words shared between adjacent chunks (~25%)
 
 
 def _chunk(text: str, source: str) -> List[Dict]:
-    """Split a doc into overlapping section-aware chunks."""
-    # Split on markdown headings first, then size-cap
+    """Split a doc into overlapping, section-aware chunks.
+
+    Chunks overlap by ``_CHUNK_OVERLAP`` words. Without overlap, a fact that
+    straddles a chunk boundary (e.g. "...LTV cap is" | "75% for loans above
+    ₹75L") is split across two chunks and becomes unretrievable as a unit —
+    the classic RAG boundary-loss problem. The previous implementation stepped
+    by the full chunk size (zero overlap) despite its docstring.
+    """
+    stride = max(1, _CHUNK_TOKENS - _CHUNK_OVERLAP)
     blocks = re.split(r"\n(?=#)", text)
     chunks = []
     idx = 0
@@ -36,13 +44,13 @@ def _chunk(text: str, source: str) -> List[Dict]:
         words = block.split()
         if not words:
             continue
-        for start in range(0, len(words), _CHUNK_TOKENS):
+        # Capture the nearest heading as a section label (per block).
+        heading = ""
+        m = re.search(r"#+\s*(.+)", block)
+        if m:
+            heading = m.group(1).strip()[:60]
+        for start in range(0, len(words), stride):
             piece = " ".join(words[start:start + _CHUNK_TOKENS])
-            # Try to capture the nearest heading as a section label
-            heading = ""
-            m = re.search(r"#+\s*(.+)", block)
-            if m:
-                heading = m.group(1).strip()[:60]
             chunks.append({
                 "id": f"{source}::{idx}",
                 "text": piece,
@@ -50,6 +58,10 @@ def _chunk(text: str, source: str) -> List[Dict]:
                 "section": heading,
             })
             idx += 1
+            # Stop once the window has consumed the block (avoid a trailing
+            # duplicate chunk shorter than the overlap).
+            if start + _CHUNK_TOKENS >= len(words):
+                break
     return chunks
 
 
