@@ -1,0 +1,26 @@
+# Gradle / Android build outputs
+.gradle/
+build/
+app/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Local SDK path — machine-specific, must not be committed.
+# This is also where propiq.baseUrl / propiq.apiKey overrides live.
+local.properties
+
+# IDE
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore material
+*.jks
+*.keystore
+
+# Kotlin compiler daemon logs
+.kotlin/
