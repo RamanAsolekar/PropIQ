@@ -17,6 +17,10 @@ import androidx.room.PrimaryKey
 data class QueuedAssessment(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
 
+    /** Loan file context. Local-only — PropertyInput has no such field. */
+    @ColumnInfo(name = "loan_ref") val loanRef: String = "",
+    @ColumnInfo(name = "borrower_name") val borrowerName: String = "",
+
     // Property fields — mirrors PropertyInput in backend/app/models/schemas.py
     val locality: String,
     @ColumnInfo(name = "prop_type") val propType: String,
@@ -70,6 +74,8 @@ data class QueuedAssessment(
 @Entity(tableName = "assessment_history")
 data class AssessmentHistory(
     @PrimaryKey val requestId: String,
+    @ColumnInfo(name = "loan_ref") val loanRef: String = "",
+    @ColumnInfo(name = "borrower_name") val borrowerName: String = "",
     val locality: String,
     @ColumnInfo(name = "prop_type") val propType: String,
     @ColumnInfo(name = "market_value_mid") val marketValueMid: Long,

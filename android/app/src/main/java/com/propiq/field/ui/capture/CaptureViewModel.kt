@@ -10,8 +10,10 @@ import com.propiq.field.core.userMessage
 import com.propiq.field.data.demo.DemoFixtures
 import com.propiq.field.data.demo.Localities
 import com.propiq.field.data.repo.CapturedPhoto
+import com.propiq.field.ondevice.LlmState
 import com.propiq.field.ondevice.PhotoVerdict
 import com.propiq.field.speech.VoiceEvent
+import com.propiq.field.speech.VoiceLanguage
 import com.propiq.field.sync.SyncWorker
 import android.content.Context
 import kotlinx.coroutines.Job
@@ -50,6 +52,16 @@ class CaptureViewModel(
         viewModelScope.launch {
             container.connectivity.observe().collect { online ->
                 _uiState.value = _uiState.value.copy(isOnline = online)
+            }
+        }
+        // Warm the on-device model here rather than at app start: it costs
+        // seconds and ~1 GB, and only this screen uses it.
+        viewModelScope.launch {
+            container.localLlm.warmUp()
+        }
+        viewModelScope.launch {
+            container.localLlm.state.collect { llm ->
+                _uiState.value = _uiState.value.copy(llmState = llm)
             }
         }
         viewModelScope.launch {
@@ -128,7 +140,7 @@ class CaptureViewModel(
             voiceStatus = null,
         )
         voiceJob = viewModelScope.launch {
-            container.voiceCapture.listen().collect { event ->
+            container.voiceCapture.listen(_uiState.value.voiceLanguage).collect { event ->
                 val s = _uiState.value
                 _uiState.value = when (event) {
                     is VoiceEvent.Ready -> s.copy(
@@ -163,6 +175,10 @@ class CaptureViewModel(
         }
     }
 
+    fun setVoiceLanguage(language: VoiceLanguage) {
+        _uiState.value = _uiState.value.copy(voiceLanguage = language)
+    }
+
     fun stopVoice() {
         voiceJob?.cancel()
         voiceJob = null
@@ -174,9 +190,17 @@ class CaptureViewModel(
     }
 
     /**
-     * Sends the transcript to /api/v1/chat and folds any extracted fields into
-     * the form. Reuses the backend's existing agentic extractor rather than
-     * duplicating NL parsing on the device.
+     * Turns a spoken/typed description into form fields.
+     *
+     * Two-stage, on-device first:
+     *   1. [com.propiq.field.ondevice.LocalLlm] — a quantised open-weights model
+     *      on the phone's GPU/NPU. No network, works in a basement.
+     *   2. The backend's agentic extractor at /api/v1/chat — a much larger model,
+     *      used when no local model is loaded or when the local one returns
+     *      nothing usable.
+     *
+     * The officer is told which one ran ([ParseSource]) rather than being left to
+     * guess whether their data left the handset.
      */
     fun interpret(text: String = _uiState.value.voiceTranscript) {
         if (text.isBlank()) return
@@ -192,6 +216,45 @@ class CaptureViewModel(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(voiceParsing = true, voiceStatus = "Reading the description…")
+
+            // ── Stage 1: on-device ────────────────────────────────────────
+            // Tried first whenever a local model is loaded, not only when
+            // offline. It needs no round trip, so it is usually faster than the
+            // cloud path even on good signal — and it behaves identically in a
+            // basement, which is where this app is actually used.
+            if (container.localLlm.isReady()) {
+                _uiState.value = _uiState.value.copy(
+                    voiceStatus = "Reading the description on-device…"
+                )
+                val local = container.localLlm.extractProperty(
+                    transcript = text,
+                    knownLocalities = Localities.forCity(_uiState.value.draft.city).map { it.name },
+                )
+                if (local != null) {
+                    val entry = local.locality?.let { Localities.byName(it) }
+                    _uiState.value = _uiState.value.copy(
+                        voiceParsing = false,
+                        lastParsedBy = ParseSource.ON_DEVICE,
+                        voiceStatus = "Understood on-device — no network used. " +
+                            "Check the fields below, then capture.",
+                        draft = _uiState.value.draft.copy(
+                            locality = entry?.name ?: _uiState.value.draft.locality,
+                            city = entry?.city ?: _uiState.value.draft.city,
+                            propType = local.propType ?: _uiState.value.draft.propType,
+                            sizeSqft = local.sizeSqft?.toInt()?.toString()
+                                ?: _uiState.value.draft.sizeSqft,
+                            ageYears = local.ageYears?.toInt()?.toString()
+                                ?: _uiState.value.draft.ageYears,
+                            floorNum = local.floorNum?.toString() ?: _uiState.value.draft.floorNum,
+                        ),
+                    )
+                    return@launch
+                }
+                // A 1B model that returns nothing usable is not an error — it is
+                // a cue to ask the bigger one, if we can reach it.
+            }
+
+            // ── Stage 2: cloud ────────────────────────────────────────────
             val d = _uiState.value.draft
             val context = buildMap<String, Any?> {
                 if (d.locality.isNotBlank()) put("locality", d.locality)
@@ -207,6 +270,7 @@ class CaptureViewModel(
                         val entry = fields.locality?.let { Localities.byName(it) }
                         _uiState.value = _uiState.value.copy(
                             voiceParsing = false,
+                            lastParsedBy = ParseSource.CLOUD,
                             voiceStatus = "Understood — check the fields below, then capture.",
                             draft = _uiState.value.draft.copy(
                                 locality = entry?.name ?: fields.locality ?: _uiState.value.draft.locality,
@@ -361,6 +425,8 @@ class CaptureViewModel(
 
     override fun onCleared() {
         voiceJob?.cancel()
+        // Frees ~1 GB of model weights when the capture screen goes away.
+        container.localLlm.close()
         super.onCleared()
     }
 

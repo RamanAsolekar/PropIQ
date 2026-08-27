@@ -17,6 +17,8 @@ data class ResultsUiState(
     val exporting: Boolean = false,
     val exportMessage: String? = null,
     val wasDemo: Boolean = false,
+    val loanRef: String = "",
+    val borrowerName: String = "",
 )
 
 class ResultsViewModel(
@@ -40,6 +42,8 @@ class ResultsViewModel(
                 result = decoded,
                 notFound = decoded == null,
                 wasDemo = row.wasDemo,
+                loanRef = row.loanRef,
+                borrowerName = row.borrowerName,
             )
         }
     }
@@ -56,7 +60,12 @@ class ResultsViewModel(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(exporting = true, exportMessage = null)
             val json = container.repository.encode(result)
-            val outcome = runCatching { container.exporter.export(result, json) }
+            val outcome = runCatching {
+                container.exporter.export(
+                    result, json,
+                    _uiState.value.loanRef, _uiState.value.borrowerName,
+                )
+            }
             _uiState.value = _uiState.value.copy(
                 exporting = false,
                 exportMessage = outcome.getOrNull()?.summary

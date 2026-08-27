@@ -73,7 +73,9 @@ import androidx.camera.view.PreviewView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.propiq.field.data.demo.Localities
+import com.propiq.field.ondevice.LlmState
 import com.propiq.field.ondevice.PhotoReason
+import com.propiq.field.speech.VoiceLanguage
 import com.propiq.field.ui.components.ErrorState
 import com.propiq.field.ui.components.OfflineBanner
 import com.propiq.field.ui.components.Pill
@@ -277,9 +279,27 @@ private fun VoiceCard(state: CaptureUiState, viewModel: CaptureViewModel) {
             )
             Spacer(Modifier.width(8.dp))
             SectionLabel("Describe it out loud", Modifier.weight(1f))
-            if (state.voiceOnDevice) Pill("ON-DEVICE", severity = "low")
+            when (val llm = state.llmState) {
+                is LlmState.Ready -> Pill("LLM ON-DEVICE", severity = "low")
+                LlmState.Loading -> Pill("LOADING MODEL", severity = "medium")
+                else -> if (state.voiceOnDevice) Pill("SPEECH ON-DEVICE", severity = "low")
+            }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
+
+        // Language matters here: a Pune officer dictates in Marathi as often as
+        // English, and picking the wrong locale wrecks locality recognition.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VoiceLanguage.entries.forEach { lang ->
+                FilterChip(
+                    selected = state.voiceLanguage == lang,
+                    onClick = { viewModel.setVoiceLanguage(lang) },
+                    label = { Text(lang.nativeLabel) },
+                    enabled = !state.voiceActive,
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
         Text(
             "\"Three BHK apartment in Baner, fourteen fifty square feet, eight years old, " +
                 "seventh floor\"",
@@ -352,6 +372,34 @@ private fun VoiceCard(state: CaptureUiState, viewModel: CaptureViewModel) {
         state.voiceStatus?.let {
             Spacer(Modifier.height(10.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = InkSecondary)
+        }
+
+        state.lastParsedBy?.let { source ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Memory,
+                    contentDescription = null,
+                    tint = if (source == ParseSource.ON_DEVICE) TealPrimary else InkMuted,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    source.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (source == ParseSource.ON_DEVICE) TealPrimary else InkMuted,
+                )
+            }
+        }
+
+        // Honest about what is not available, rather than silently degrading.
+        (state.llmState as? LlmState.Unavailable)?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                it.reason,
+                style = MaterialTheme.typography.labelSmall,
+                color = InkMuted,
+            )
         }
     }
 }
@@ -449,6 +497,25 @@ private fun PropertyFormCard(state: CaptureUiState, viewModel: CaptureViewModel)
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("Property details", Modifier.weight(1f))
             TextButton(onClick = viewModel::loadSampleProperty) { Text("Use sample") }
+        }
+        Spacer(Modifier.height(10.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                value = draft.loanRef,
+                onValueChange = { v -> viewModel.updateDraft { it.copy(loanRef = v) } },
+                label = { Text("Loan file ref") },
+                placeholder = { Text("LAP-2026-…") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = draft.borrowerName,
+                onValueChange = { v -> viewModel.updateDraft { it.copy(borrowerName = v) } },
+                label = { Text("Borrower") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
         }
         Spacer(Modifier.height(10.dp))
 

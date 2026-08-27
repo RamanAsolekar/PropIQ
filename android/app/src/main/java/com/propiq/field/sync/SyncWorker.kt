@@ -63,7 +63,7 @@ class SyncWorker(
 
             when (val outcome = repo.callAssess(FieldAssessmentRequest.fromQueued(item), photos)) {
                 is Outcome.Success -> {
-                    repo.persistHistory(outcome.data, wasDemo = false)
+                    repo.persistHistory(outcome.data, false, item.loanRef, item.borrowerName)
                     dao.markSynced(item.id, repo.encode(outcome.data))
                     photos.forEach { runCatching { File(it.path).delete() } }
                 }

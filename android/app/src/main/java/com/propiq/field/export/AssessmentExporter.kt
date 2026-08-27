@@ -31,13 +31,19 @@ import java.io.OutputStream
  */
 class AssessmentExporter(private val context: Context) {
 
-    suspend fun export(result: AssessmentResponse, json: String): ExportResult =
+    suspend fun export(
+        result: AssessmentResponse,
+        json: String,
+        loanRef: String = "",
+        borrowerName: String = "",
+    ): ExportResult =
         withContext(Dispatchers.IO) {
             val stamp = Fmt.fileTimestamp()
             val id = result.requestId ?: "assessment"
             val baseName = "PropIQ_${id}_$stamp"
 
-            val pdf = runCatching { writePdf(result, "$baseName.pdf") }.getOrNull()
+            val pdf = runCatching { writePdf(result, "$baseName.pdf", loanRef, borrowerName) }
+                .getOrNull()
             val jsonFile = runCatching { writeText(json, "$baseName.json", "application/json") }
                 .getOrNull()
 
@@ -51,7 +57,12 @@ class AssessmentExporter(private val context: Context) {
 
     // ── PDF ───────────────────────────────────────────────────────────────
 
-    private fun writePdf(r: AssessmentResponse, fileName: String): String {
+    private fun writePdf(
+        r: AssessmentResponse,
+        fileName: String,
+        loanRef: String,
+        borrowerName: String,
+    ): String {
         val doc = PdfDocument()
         val pageInfo = PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, 1).create()
         val page = doc.startPage(pageInfo)
@@ -92,6 +103,15 @@ class AssessmentExporter(private val context: Context) {
         )
 
         var y = 108f
+
+        // Loan file — first, because a credit officer files by loan, not by address
+        if (loanRef.isNotBlank() || borrowerName.isNotBlank()) {
+            c.drawText("LOAN FILE", MARGIN, y, label); y += 15f
+            c.drawText(
+                listOf(loanRef, borrowerName).filter { it.isNotBlank() }.joinToString("  ·  "),
+                MARGIN, y, bodyBold,
+            ); y += 22f
+        }
 
         // Subject
         c.drawText("SUBJECT PROPERTY", MARGIN, y, label); y += 15f

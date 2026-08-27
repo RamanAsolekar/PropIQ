@@ -2,7 +2,9 @@ package com.propiq.field.ui.capture
 
 import com.propiq.field.data.repo.FieldAssessmentRequest
 import com.propiq.field.location.GeoFix
+import com.propiq.field.ondevice.LlmState
 import com.propiq.field.ondevice.PhotoVerdict
+import com.propiq.field.speech.VoiceLanguage
 
 /**
  * The property form as the officer is filling it.
@@ -12,6 +14,14 @@ import com.propiq.field.ondevice.PhotoVerdict
  * and conversion happen once, in [toRequest].
  */
 data class PropertyDraft(
+    /**
+     * The loan file this collateral belongs to. Not sent to the valuation
+     * endpoint (PropertyInput has no such field) — it is stamped on the local
+     * record and the exported PDF, which is what makes the app usable across
+     * six site visits in a day instead of one.
+     */
+    val loanRef: String = "",
+    val borrowerName: String = "",
     val city: String = "Pune",
     val locality: String = "",
     val propType: String = "2bhk_apartment",
@@ -68,6 +78,8 @@ data class PropertyDraft(
          * Mode runs the full flow with no network.
          */
         fun sample() = PropertyDraft(
+            loanRef = "LAP-2026-04417",
+            borrowerName = "S. Deshpande",
             city = "Pune",
             locality = "Baner",
             propType = "3bhk_apartment",
@@ -87,6 +99,8 @@ data class PropertyDraft(
 
     fun toRequest(fix: GeoFix?, fallbackLatLon: Pair<Double, Double>?, forceFraudDemo: Boolean = false) =
         FieldAssessmentRequest(
+            loanRef = loanRef.trim(),
+            borrowerName = borrowerName.trim(),
             locality = locality.trim(),
             propType = propType,
             sizeSqft = sizeSqft.toDoubleOrNull() ?: 0.0,
@@ -127,6 +141,7 @@ data class CaptureUiState(
     val locationDenied: Boolean = false,
 
     // Voice
+    val voiceLanguage: VoiceLanguage = VoiceLanguage.ENGLISH_IN,
     val voiceActive: Boolean = false,
     val voiceOnDevice: Boolean = false,
     val voiceAmplitude: Float = 0f,
@@ -134,6 +149,11 @@ data class CaptureUiState(
     val voicePartial: String = "",
     val voiceStatus: String? = null,
     val voiceParsing: Boolean = false,
+    /** Which engine actually parsed the last transcript — shown to the officer. */
+    val lastParsedBy: ParseSource? = null,
+
+    // On-device LLM
+    val llmState: LlmState = LlmState.NotInitialised,
 
     // On-device gate feedback for the most recent shot
     val lastVerdict: PhotoVerdict? = null,
@@ -150,6 +170,12 @@ data class CaptureUiState(
 
     val exteriorCount: Int get() = frames.count { it.tag == "exterior" }
     val interiorCount: Int get() = frames.count { it.tag == "interior" }
+}
+
+/** Which extractor produced the current form values. */
+enum class ParseSource(val label: String) {
+    ON_DEVICE("Parsed on-device"),
+    CLOUD("Parsed in cloud"),
 }
 
 /** One-shot events the screen consumes and clears. */

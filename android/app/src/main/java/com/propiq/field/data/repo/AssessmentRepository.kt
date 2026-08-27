@@ -70,7 +70,7 @@ class AssessmentRepository(
 
         if (settings.demoMode.value) {
             val demo = if (request.forceFraudDemo) DemoFixtures.fraud() else DemoFixtures.clean()
-            persistHistory(demo, wasDemo = true)
+            persistHistory(demo, true, request.loanRef, request.borrowerName)
             return@withContext Outcome.Success(demo)
         }
 
@@ -90,7 +90,7 @@ class AssessmentRepository(
 
         when (val result = callAssess(request, photos)) {
             is Outcome.Success -> {
-                persistHistory(result.data, wasDemo = false)
+                persistHistory(result.data, false, request.loanRef, request.borrowerName)
                 result
             }
             is Outcome.Failure -> {
@@ -207,6 +207,8 @@ class AssessmentRepository(
         reason: FailureKind,
     ): Long = queueDao.insert(
         QueuedAssessment(
+            loanRef = request.loanRef,
+            borrowerName = request.borrowerName,
             locality = request.locality,
             propType = request.propType,
             sizeSqft = request.sizeSqft,
@@ -228,12 +230,19 @@ class AssessmentRepository(
         )
     )
 
-    suspend fun persistHistory(result: AssessmentResponse, wasDemo: Boolean) {
+    suspend fun persistHistory(
+        result: AssessmentResponse,
+        wasDemo: Boolean,
+        loanRef: String = "",
+        borrowerName: String = "",
+    ) {
         val id = result.requestId ?: return
         runCatching {
             historyDao.upsert(
                 AssessmentHistory(
                     requestId = id,
+                    loanRef = loanRef,
+                    borrowerName = borrowerName,
                     locality = result.locality.orEmpty(),
                     propType = result.propType.orEmpty(),
                     marketValueMid = result.marketValueMid ?: 0L,
@@ -296,6 +305,14 @@ class AssessmentRepository(
 
 /** Flat, serialisable snapshot of everything the backend needs. */
 data class FieldAssessmentRequest(
+    /**
+     * Loan file context. Deliberately NOT among the @Part arguments in
+     * [PropIQApi.assessWithImage] — the backend's PropertyInput has no such
+     * field and would reject it. It exists to tie the local record to the file
+     * the officer is actually working, and to stamp the exported PDF.
+     */
+    val loanRef: String = "",
+    val borrowerName: String = "",
     val locality: String,
     val propType: String,
     val sizeSqft: Double,
@@ -315,6 +332,8 @@ data class FieldAssessmentRequest(
 ) {
     companion object {
         fun fromQueued(q: QueuedAssessment) = FieldAssessmentRequest(
+            loanRef = q.loanRef,
+            borrowerName = q.borrowerName,
             locality = q.locality,
             propType = q.propType,
             sizeSqft = q.sizeSqft,

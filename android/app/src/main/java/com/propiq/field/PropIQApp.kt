@@ -11,6 +11,7 @@ import com.propiq.field.data.remote.PropIQApi
 import com.propiq.field.data.repo.AssessmentRepository
 import com.propiq.field.export.AssessmentExporter
 import com.propiq.field.location.LocationProvider
+import com.propiq.field.ondevice.LocalLlm
 import com.propiq.field.ondevice.PhotoGate
 import com.propiq.field.speech.VoiceCapture
 import com.propiq.field.sync.SyncWorker
@@ -61,5 +62,12 @@ class AppContainer(context: Context) {
     val locationProvider: LocationProvider = LocationProvider(appContext)
     val voiceCapture: VoiceCapture = VoiceCapture(appContext)
     val photoGate: PhotoGate = PhotoGate()
+
+    /**
+     * On-device LLM. Constructed eagerly but NOT loaded — warmUp() is called by
+     * the capture screen, because loading a ~1 GB model costs seconds and most
+     * app launches never need it.
+     */
+    val localLlm: LocalLlm = LocalLlm(appContext)
     val exporter: AssessmentExporter = AssessmentExporter(appContext)
 }

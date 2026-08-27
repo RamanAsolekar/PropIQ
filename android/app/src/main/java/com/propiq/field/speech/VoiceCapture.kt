@@ -25,11 +25,11 @@ import kotlinx.coroutines.flow.callbackFlow
  * the network) when on-device recognition is unavailable, and report which one
  * is actually in use so the UI can be honest about it.
  *
- * The transcript is not parsed on-device. It is posted to the backend's
- * /api/v1/chat endpoint, whose agentic extractor (`_extract_property_fields`,
- * backend/app/main.py:1548) returns `action:"auto_assess"` with structured
- * fields — reusing the exact NL understanding the web app already has instead
- * of writing a second, weaker parser here.
+ * Turning the transcript into structured fields is somebody else's job:
+ * [com.propiq.field.ondevice.LocalLlm] first (on-device, works with no signal),
+ * falling back to the backend's agentic extractor (`_extract_property_fields`,
+ * backend/app/main.py:1548) when no local model is loaded. This class only
+ * produces text.
  */
 class VoiceCapture(private val context: Context) {
 
@@ -45,7 +45,7 @@ class VoiceCapture(private val context: Context) {
      * the collector tears the recogniser down. SpeechRecognizer is main-thread
      * only, so the caller must collect on the main dispatcher.
      */
-    fun listen(): Flow<VoiceEvent> = callbackFlow {
+    fun listen(language: VoiceLanguage = VoiceLanguage.ENGLISH_IN): Flow<VoiceEvent> = callbackFlow {
         if (!isAvailable()) {
             trySend(VoiceEvent.Unavailable("No speech recognition service on this device."))
             close()
@@ -112,9 +112,17 @@ class VoiceCapture(private val context: Context) {
             )
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            // Indian English gets "lakh", "BHK" and locality names markedly better
-            // than en-US does.
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
+            // Language matters more than it looks. A Pune field officer dictates
+            // in Marathi or Hindi as often as English, and en-US mangles "lakh",
+            // "BHK" and locality names even when the officer IS speaking English.
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language.tag)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language.tag)
+            // Let the recogniser fall back to English rather than failing outright
+            // if the regional pack is not installed on the loaner handset.
+            putExtra(
+                RecognizerIntent.EXTRA_SUPPORTED_LANGUAGES,
+                arrayListOf(language.tag, VoiceLanguage.ENGLISH_IN.tag),
+            )
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
         }
 
@@ -165,4 +173,24 @@ sealed interface VoiceEvent {
     data class Final(val text: String) : VoiceEvent
     data class Error(val message: String, val recoverable: Boolean) : VoiceEvent
     data class Unavailable(val message: String) : VoiceEvent
+}
+
+/**
+ * Dictation languages offered in the field.
+ *
+ * Pune is the pilot city, so Marathi is first-class rather than an afterthought.
+ * Whether a given handset actually has the offline pack for a language is a
+ * device-level question we cannot answer up front — [VoiceCapture] therefore
+ * always passes English as a fallback in EXTRA_SUPPORTED_LANGUAGES rather than
+ * letting an absent pack turn into a hard failure mid-visit.
+ */
+enum class VoiceLanguage(val tag: String, val label: String, val nativeLabel: String) {
+    ENGLISH_IN("en-IN", "English", "English"),
+    HINDI("hi-IN", "Hindi", "हिन्दी"),
+    MARATHI("mr-IN", "Marathi", "मराठी");
+
+    companion object {
+        fun fromTag(tag: String?): VoiceLanguage =
+            entries.firstOrNull { it.tag == tag } ?: ENGLISH_IN
+    }
 }

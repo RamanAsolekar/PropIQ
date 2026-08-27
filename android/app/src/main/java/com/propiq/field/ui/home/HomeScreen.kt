@@ -362,6 +362,18 @@ private fun HistoryRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = InkSecondary,
                 )
+                // The loan file is what makes a list of six site visits
+                // navigable; without it every row looks the same.
+                if (entry.loanRef.isNotBlank() || entry.borrowerName.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        listOf(entry.loanRef, entry.borrowerName)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = InkMuted,
+                    )
+                }
             }
             Text(
                 Fmt.relative(entry.createdAt),

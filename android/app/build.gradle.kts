@@ -108,6 +108,8 @@ dependencies {
 
     // On-device AI + device data
     implementation(libs.mlkit.image.labeling)
+    // On-device LLM (Gemma / Phi class) — model file is side-loaded, not bundled.
+    implementation(libs.mediapipe.tasks.genai)
     implementation(libs.play.services.location)
 
     implementation(libs.coil.compose)
