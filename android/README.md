@@ -92,7 +92,9 @@ change for Android.
 ```
 ui/            Compose screens + ViewModels        (no business logic in Composables)
   home/  capture/  results/  components/  theme/  nav/
-ondevice/      PhotoGate — LOCAL inference          ← on-device half of the pipeline
+ondevice/      LOCAL inference — the on-device half of the pipeline
+  PhotoGate    blur variance + ML Kit scene labelling (bundled in APK)
+  LocalLlm     Gemma-class LLM on the GPU/NPU via MediaPipe (side-loaded)
 data/
   remote/      Retrofit API + DTOs                  ← cloud half of the pipeline
   local/       Room: offline queue + history
@@ -161,8 +163,12 @@ keeps junk off the backend entirely.
 |---|---|---|
 | Camera | CameraX (`ImageCapture`, live preview) | `ui/capture/CameraCapture.kt` |
 | NPU / DSP | ML Kit bundled image labelling | `ondevice/PhotoGate.kt` |
+| **GPU / NPU** | **MediaPipe LLM Inference — Gemma 3 1B, quantised** | `ondevice/LocalLlm.kt` |
 | GPS | `FusedLocationProviderClient` | `location/LocationProvider.kt` |
-| Microphone | `SpeechRecognizer`, on-device on API 31+ | `speech/VoiceCapture.kt` |
+| Microphone | `SpeechRecognizer` (on-device on API 31+), English / हिन्दी / मराठी | `speech/VoiceCapture.kt` |
+
+Two models run locally, and they do different jobs: `PhotoGate` screens frames
+before upload, `LocalLlm` turns speech into structured fields with no network.
 
 There is **no gallery picker anywhere in the app** — deliberately. A collateral
 photo that could have been taken somewhere else at some other time is worthless
@@ -223,39 +229,161 @@ Two scenarios:
 
 ---
 
-## 90-second demo script
+## On-device LLM
 
-Setup: Demo Mode **on**, app on the Home screen, laptop paired via Office Kit.
+The voice-to-fields step runs a quantised open-weights model (Gemma 3 1B class)
+on the phone's GPU/NPU through MediaPipe's LLM Inference API. It is the second
+on-device model in the app, alongside the ML Kit labeller in `PhotoGate`.
 
-| Time | Do | Say | Criterion |
-|---|---|---|---|
-| **0:00–0:10** | Home screen. Point at the "2-3 weeks → < 60 seconds" panel. | "LAP collateral valuation in India takes two to three weeks and a physical site visit. We collapse it to under a minute, on the same phone that got the officer there." | Novelty & Impact (20%) |
-| **0:10–0:20** | Tap **Start field assessment**. GPS chip fills in on its own; locality auto-selects. | "GPS is captured the moment the screen opens — the officer never types a location. It also lets our server skip geocoding, so the result comes back faster." | Phone use (15%) |
-| **0:20–0:35** | Tap **Speak**. Say: *"Three BHK apartment in Baner, fourteen fifty square feet, eight years old, seventh floor."* Form fills. | "Speech-to-text runs on-device. Hands-free matters when you're holding a phone up to a wall with a torch in the other hand." | Phone use (15%) |
-| **0:35–0:50** | **Open camera**. Deliberately capture one blurred frame → red on-device rejection appears. Then capture a sharp exterior + interior. | "Every frame is screened on the phone's own NPU before anything is uploaded. Blur detection and scene classification, about two hundred milliseconds. A bad photo never costs a round trip." | Phone use + Technical depth |
-| **0:50–1:05** | Tap **Run the fraud-detection scenario**. Results screen lands. | "Valuation, one-nine-four crore. But look at the red banner." | End product (30%) |
-| **1:05–1:20** | Point at the fraud banner, then the LTV panel. | "The borrower declared a 3BHK apartment. The vision model looked at the photos and saw an industrial warehouse — roller shutter, roof trusses, pallet racking. Two high-severity flags, and the LTV engine has already cut the sanction from 70% to 40%. Caught before disbursal, not during recovery." | Novelty & Impact (20%) |
-| **1:20–1:30** | Tap **Export assessment**. Drag the PDF to the laptop via Office Kit. | "Exports to Downloads as PDF and JSON — straight across to the credit team's laptop." | Office Kit (10%) |
+**Why it is not a gimmick:** the offline queue already let an officer *submit*
+without signal, but until now they still had to type the property in by hand,
+because parsing the spoken description round-tripped to `/api/v1/chat`. In a
+basement that step was dead — the exact scenario the queue exists for. The local
+model closes that loop.
 
-**Optional 15s add-on if the room is engaged** — turn on airplane mode, run
-another assessment, show it queue; turn wifi back on, show it auto-submit.
-That's the End Product criterion (30%) in one gesture.
+`interpret()` is two-stage: on-device first (no round trip, works with the radio
+off), cloud extractor as fallback. The capture screen tells the officer which
+one ran rather than leaving them to guess whether their data left the handset.
 
-### If something goes wrong on stage
+### Installing the model
 
-- Backend unreachable → it's already Demo Mode; nothing hits the network.
-- Camera won't bind → the error state offers "Back to form"; Demo Mode submits
-  without photos.
-- Fresh install with no history → the Home empty state is deliberate copy, not a
-  blank screen.
+The model is **not in the APK and not in this repo** — it is 0.5-1.3 GB and
+licence-gated.
+
+```bash
+# once per device; survives app reinstalls
+./scripts/push-model.sh ~/Downloads/Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task
+```
+
+Get the file by accepting the Gemma licence at
+`huggingface.co/litert-community/Gemma3-1B-IT` and downloading a `.task` build.
+Do this **before the event or during Green Light** — it is a slow download and a
+slow USB push.
+
+`LocalLlm.MODEL_SEARCH_PATHS` lists where the app looks, in priority order.
+
+### It cannot break the demo
+
+Every failure — absent file, truncated push, OOM, unsupported backend, slow
+inference — degrades silently to `LlmState.Unavailable` and the cloud path. The
+app is fully functional with no model present. Nothing requires it.
+
+Confirm it loaded: the voice card shows **LLM ON-DEVICE**. Debug with
+`adb logcat -s LocalLlm:*`.
 
 ---
 
-## What I'd build next
+## Red Light / Green Light plan
+
+The event splits build time 55% **Red Light (phone only, no laptop)** / 45%
+**Green Light (phone + laptop via Office Kit)**. 30 hours gives ~16.5h Red,
+~13.5h Green.
+
+### The honest constraint
+
+**You cannot realistically run Gradle Android builds on the phone.** AGP needs
+aapt2/d8 native binaries; Termux builds exist but are fragile, and burning Red
+Light hours fighting a toolchain produces nothing demoable. AIDE does not
+support Kotlin 2.0 or Compose.
+
+So this plan does not depend on compiling during Red Light. **Red Light does not
+require compiling — it requires the work to happen on the phone**, and there is
+a lot of real work that is genuinely phone-native:
+
+| Phase | Tooling on the phone | What actually gets done |
+|---|---|---|
+| Red | Acode / Squircle IDE, or Termux + `nvim` | Writing Kotlin and Compose source, editing copy, palette and layout values |
+| Red | Termux + `git` | Branching, committing, pushing — full history from the handset |
+| Red | The app itself | **All device testing.** Camera framing, GPS drift indoors, Marathi recognition accuracy, on-device LLM latency, blur-threshold tuning against real walls |
+| Red | Termux + `curl` | Hitting the deployed backend directly to verify contracts |
+| Green | Laptop | Compiling, dependency surgery, `adb push` of the model, install cycles, PDF layout checks |
+
+Device testing is the part worth protecting. It **can only be done on the
+phone**, it is what tunes `PhotoGate` thresholds and the LLM prompt to reality,
+and it generates exactly the telemetry criterion 3 measures.
+
+### Hour-by-hour
+
+| Hours | Light | Work |
+|---|---|---|
+| 0-1 | Green | Check in. Clone, `./gradlew assembleDebug`, `installDebug`, `push-model.sh`. Get a working APK on the loaner **before** Red Light starts. |
+| 1-3 | Red | Device-test everything already built. Camera in real light, GPS indoors, voice in all three languages. Write findings straight into the repo as notes. |
+| 3-6 | Red | Tune on-device thresholds from what you just measured: `BLUR_REJECT` / `BLUR_WARN`, the LLM prompt, locality snapping. Source edits on-phone. |
+| 6-8 | Green | Compile the tuned values, reinstall, re-measure. First Office Kit file hops. |
+| 8-12 | Red | Build out UI and copy on-phone: results polish, empty states, error copy, the fraud banner wording. All source-level, no compile needed. |
+| 12-15 | Green | Compile everything from 8-12. Fix what broke. Run `./gradlew testDebugUnitTest`. Export a PDF and pull it across via Office Kit. |
+| 15-19 | Red | **Sleep window** for a 3-person team, or on-phone rehearsal. Run the demo end-to-end on the handset repeatedly. Time it. |
+| 19-22 | Green | Final integration. Clean build, install from scratch, verify with no history present. |
+| 22-25 | Red | Rehearse on the phone. Airplane-mode drill. Fraud-scenario drill. Get it under 4 minutes reliably. |
+| 25-28 | Green | Buffer for whatever broke. Re-export artefacts to the laptop for the slide deck via Office Kit. |
+| 28-30 | Red | Final phone-only rehearsal. Charge. Do not touch the code. |
+
+**Two rules that matter more than the schedule:**
+
+1. **Get a working APK on the loaner in hour 0-1.** Everything else is optional;
+   an app that will not install at hour 29 is a zero.
+2. **Freeze code at hour 28.** The last two hours are rehearsal, not building.
+
+### Office Kit (criterion 5, 10%, telemetry-scored)
+
+Scored on **actual bridge usage during the 30 hours**, not on code. Natural
+reasons to use it, spread across the event rather than once at the end:
+
+- Every Green Light compile sends an APK across to the phone
+- The model push
+- PDF/JSON exports pulled back for the slide deck
+- Clipboard sync for logcat traces while debugging on-phone
+- Screen mirror while rehearsing, so a teammate sees what you tap
+
+---
+
+## Rehearsed demo script — 4 minutes, live on the loaner iQOO 15
+
+Setup before you walk up: Demo Mode **on**, model pushed, app on Home, phone
+mirrored to the projector via Office Kit, airplane mode **off**.
+
+| Time | You tap / say | Criterion hit |
+|---|---|---|
+| **0:00-0:25** | Home screen on the projector. *"Loan Against Property is a nine-lakh-crore-rupee market in India. Every one of those loans needs its collateral valued — and today that takes two to three weeks and a physical visit from a panel valuer. We collapse it to under a minute, on the phone the officer already carried to the site."* | Novelty 20% |
+| **0:25-0:45** | Tap **Start field assessment**. GPS chip fills itself in; locality auto-selects Baner. Type `LAP-2026-04417`. *"Location is captured the second the screen opens — the officer never types it. It also lets our server skip geocoding, so the answer comes back faster. And it is filed against a real loan number, because an officer does six of these a day."* | Phone use 15% · Product 30% |
+| **0:45-1:15** | Tap **मराठी**, then **Speak**. Say the property in Marathi. Watch the fields fill. Point at the **LLM ON-DEVICE** pill. *"That was Marathi — our officers are in Pune, they do not dictate in English. And here is the part to notice: that parsing just ran on this phone's NPU. A one-billion-parameter Gemma model, quantised, running locally. No network."* | **Phone use 15% + local-model bonus** |
+| **1:15-1:45** | **Open camera.** Deliberately capture a blurred frame, get the red on-device rejection. Then a sharp exterior and interior. *"Every frame is screened on-device before anything uploads — blur variance plus a scene classifier, about two hundred milliseconds. A bad photo never costs a thirty-second round trip to a vision model that would only tell us it is a bad photo."* | Phone use 15% · Depth 15% |
+| **1:45-2:15** | Tap **Run the fraud-detection scenario**. Results screen lands. *"One point nine four crore. Confidence eighty-seven percent. But look at the red banner."* | Product 30% |
+| **2:15-2:55** | Point at the fraud banner, then scroll to LTV. *"The borrower declared a three-BHK apartment. The vision model looked at the photographs and saw an industrial warehouse — roller shutter, roof trusses, pallet racking. Two high-severity flags. And the LTV engine has already cut the sanction from seventy percent to forty, pending physical re-verification. That is caught before disbursal, not during recovery two years later."* | **Novelty 20% · Product 30%** |
+| **2:55-3:20** | Turn on **airplane mode**. Run another assessment — it queues. Turn it off — it submits itself. *"A field officer in basement parking is the normal case, not an edge case. Nothing is ever lost — and because the model is on-device, they can still fill the form by voice down there."* | Product 30% · Depth 15% |
+| **3:20-3:40** | Tap **Export assessment**. Drag the PDF to the laptop over Office Kit, open it on the projector. *"Straight to the credit team as a one-page memo."* | **Office Kit 10%** |
+| **3:40-4:00** | Back to Home. *"Two to three weeks, down to under a minute. Fraud caught before the money goes out. Running on the officer's own phone, offline, in their own language. That is PropIQ Field."* | Presentation 10% |
+
+### Contingencies — rehearse these too
+
+| If | Then |
+|---|---|
+| Venue wifi dies | Nothing happens. Demo Mode never touches the network. |
+| Model did not load | The pill reads SPEECH ON-DEVICE instead. Skip the NPU line; do not draw attention to it. Everything else is identical. |
+| Voice mis-hears in Marathi | Tap **Use sample** and carry on — *"I will type it, in the interest of time."* |
+| Camera will not bind | The error state offers **Back to form**; Demo Mode submits without photos. |
+| Projector or mirror drops | Keep talking to the phone in your hand. The pitch does not depend on the mirror. |
+
+See [PITCH.md](PITCH.md) for the full narrative version.
+
+---
+
+## Testing
+
+```bash
+./gradlew testDebugUnitTest
+```
+
+33 unit tests over the logic where a bug is silent rather than loud — Indian
+digit grouping, form bounds mirrored from the backend's Pydantic Fields, retry
+routing, fraud-flag detection, and locality-table drift.
+
+---
+
+## What I would build next
 
 - Room migrations (currently `fallbackToDestructiveMigration`, fine pre-1.0)
 - Instrumented tests for the queue → sync → history path
-- The backend's `/assess/full` comps and 24-month trend blocks are fetched but
-  not yet surfaced on the phone; they'd fit as a fourth results panel
-- Signed release build + R8 shrinking (the debug APK is ~60 MB, mostly the
-  bundled ML Kit model)
+- The backend's `/api/v1/rag/query` returns cited RBI policy snippets; a field
+  officer arguing an LTV cap with a branch manager would want that on the phone
+- Signed release build + R8 (debug APK is ~60 MB, mostly the ML Kit model)

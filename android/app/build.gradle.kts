@@ -41,6 +41,16 @@ android {
 
         buildConfigField("String", "DEFAULT_BASE_URL", "\"$configuredBaseUrl\"")
         buildConfigField("String", "DEFAULT_API_KEY", "\"$configuredApiKey\"")
+
+        // MediaPipe ships ~35 MB of native libraries per ABI, which took the
+        // debug APK from 60 MB to 170 MB. Keeping only arm64-v8a (every phone
+        // shipped in years, the iQOO 15 included) and x86_64 (emulator) halves
+        // it. That is not cosmetic during a hackathon: it is the difference
+        // between a 20-second install cycle and a 90-second one, repeated all
+        // day, and the same again over the Office Kit bridge.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
